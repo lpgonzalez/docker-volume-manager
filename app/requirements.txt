@@ -1,0 +1,2 @@
+python-dotenv==1.0.1
+python_json_logger==3.2.1
