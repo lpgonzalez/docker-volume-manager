@@ -122,3 +122,56 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# ============================================================================
+# Project-specific / OS / Editors
+# ============================================================================
+
+# OS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.vim/
+.fleet/
+.zed/
+
+# Test runtime data (created by `make run-*` targets — keep local, never commit)
+in_dir/
+out_dir/
+logs/
+
+# Saved Docker images (output of `make save-image`)
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+
+# Local secrets / config overrides (project-level)
+.env.local
+.env.*.local
+secrets/
+*.pem
+*.priv
+*.gpg
+*.asc
+
+# Backup / scratch files
+*.bak
+*.tmp
+*.orig
+
+# pytest coverage reports (in addition to .coverage already ignored above)
+htmlcov/
+coverage.html
+coverage.json

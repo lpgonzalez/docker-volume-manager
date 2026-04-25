@@ -1,2 +1,7 @@
-python-dotenv==1.0.1
-python_json_logger==3.2.1
+python-dotenv==1.2.1
+python_json_logger==4.0.0
+python-gnupg==0.5.5
+typer==0.15.1
+click==8.1.8
+rich==13.9.4
+docker==7.1.0
