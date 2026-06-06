@@ -27,6 +27,7 @@ import tempfile
 import time
 
 from operations import codecs
+from process_monitor import ProcessMonitor, read_proc_io
 from progress import ProgressReporter, status
 
 logger = logging.getLogger("dvm")
@@ -351,13 +352,24 @@ class BackupManager:
         # Collect items to archive to provide progress metrics
         file_list = []
         dir_list = []
+        total_bytes = 0
         for root, dirs, files in os.walk(self.input_path):
             for d in dirs:
                 dir_list.append(os.path.join(root, d))
             for f in files:
-                file_list.append(os.path.join(root, f))
+                fp = os.path.join(root, f)
+                file_list.append(fp)
+                try:
+                    total_bytes += os.lstat(fp).st_size
+                except OSError:
+                    pass
         total_files = len(file_list)
-        logger.info("Compressing %d files into %s", total_files, archive_path)
+        logger.info(
+            "Compressing %d files (%d bytes) into %s",
+            total_files,
+            total_bytes,
+            archive_path,
+        )
 
         try:
             # zstd: Python 3.14's tarfile supports "w:zst" directly (PEP 784).
@@ -373,13 +385,24 @@ class BackupManager:
                         arcname = arcname + "/"
                     self._add_path_preserve(tar, dpath, arcname=arcname)
 
-                with ProgressReporter("Compressing", total_files) as pr:
+                with ProgressReporter(
+                    f"Compressing (0/{total_files} files)", total_bytes, unit="bytes"
+                ) as pr:
+                    done_files = 0
                     for filepath in file_list:
                         rel = os.path.relpath(filepath, start=self.input_path)
                         if rel == ".":
                             continue
+                        try:
+                            fsize = os.lstat(filepath).st_size
+                        except OSError:
+                            fsize = 0
                         self._add_path_preserve(tar, filepath, arcname=rel)
-                        pr.advance()
+                        done_files += 1
+                        pr.advance(fsize)
+                        pr.update_description(
+                            f"Compressing ({done_files}/{total_files} files)"
+                        )
             finally:
                 try:
                     tar.close()
@@ -445,8 +468,20 @@ class BackupManager:
         archive_name = f"{self.vol_name}{ext}.gpg"
         archive_path = os.path.join(ts_dir, archive_name)
 
-        total_files = sum(len(files) for _, _, files in os.walk(self.input_path))
-        logger.info("Pipeline will process approximately %d files", total_files)
+        total_files = 0
+        total_bytes = 0
+        for root, _dirs, files in os.walk(self.input_path):
+            total_files += len(files)
+            for fname in files:
+                try:
+                    total_bytes += os.lstat(os.path.join(root, fname)).st_size
+                except OSError:
+                    pass
+        logger.info(
+            "Pipeline will process approximately %d files (%d bytes)",
+            total_files,
+            total_bytes,
+        )
 
         # Build tar command with PAX format and archive contents ('.')
         tar_cmd = ["tar", "--format=pax", "-c", "-C", self.input_path, "."]
@@ -536,11 +571,52 @@ class BackupManager:
                 os.close(passphrase_fd)
                 passphrase_fd = None
 
-            _gpg_out, gpg_err = gpg_proc.communicate()
-            gpg_rc = gpg_proc.returncode
+            # Live progress + stall watchdog, both fed by /proc/<pid>/io: progress
+            # tracks how many input bytes tar has read; the watchdog watches total
+            # I/O across all three processes and kills them if it flatlines.
+            pipeline_procs = [
+                p for p in (tar_proc, comp_proc, gpg_proc) if p is not None
+            ]
 
-            tar_rc = tar_proc.wait() if tar_proc else 0
-            comp_rc = comp_proc.wait() if comp_proc else 0
+            def _progress_bytes():
+                io = read_proc_io(tar_proc.pid)
+                return io[0] if io else None  # tar rchar == input consumed
+
+            _activity_seen = [0]
+
+            def _activity_bytes():
+                total = sum(
+                    io[0] + io[1]
+                    for p in pipeline_procs
+                    if (io := read_proc_io(p.pid)) is not None
+                )
+                _activity_seen[0] = max(_activity_seen[0], total)
+                return _activity_seen[0]
+
+            def _kill_pipeline():
+                for p in pipeline_procs:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+
+            with ProcessMonitor(
+                "Backup (compress + encrypt)",
+                total_bytes,
+                progress_fn=_progress_bytes,
+                activity_fn=_activity_bytes,
+                on_stall=_kill_pipeline,
+            ) as monitor:
+                _gpg_out, gpg_err = gpg_proc.communicate()
+                gpg_rc = gpg_proc.returncode
+                tar_rc = tar_proc.wait() if tar_proc else 0
+                comp_rc = comp_proc.wait() if comp_proc else 0
+
+            if monitor.stalled:
+                raise RuntimeError(
+                    f"Backup pipeline stalled (no I/O for {monitor.stall_timeout}s) "
+                    "and was terminated."
+                )
 
             # Intermediate stderr was buffered to temp files; read it now.
             def _log_err_file(handle, label: str) -> None:

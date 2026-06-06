@@ -36,6 +36,7 @@ from operations.fs_overwrite import (
     is_nonempty,
     should_overwrite,
 )
+from process_monitor import ProcessMonitor, read_proc_io
 from progress import status
 
 logger = logging.getLogger("dvm")
@@ -362,20 +363,62 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
 
         logger.debug("Attempting extraction with system tar: %s", " ".join(cmd))
         try:
-            with status("Extracting archive (system tar)"):
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-            if proc.returncode == 0:
+            archive_size = os.path.getsize(archive_path)
+        except OSError:
+            archive_size = 0
+
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            # Progress tracks bytes tar has read from the (compressed) archive;
+            # the watchdog watches the same process's total I/O for stalls.
+            def _progress_bytes():
+                io = read_proc_io(proc.pid)
+                return io[0] if io else None
+
+            _seen = [0]
+
+            def _activity_bytes():
+                io = read_proc_io(proc.pid)
+                total = (io[0] + io[1]) if io else 0
+                _seen[0] = max(_seen[0], total)
+                return _seen[0]
+
+            def _kill():
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+            with ProcessMonitor(
+                "Restore (extract)",
+                archive_size,
+                progress_fn=_progress_bytes,
+                activity_fn=_activity_bytes,
+                on_stall=_kill,
+            ) as monitor:
+                out, err = proc.communicate()
+            rc = proc.returncode
+
+            if monitor.stalled:
+                raise RestoreError(
+                    f"Restore extraction stalled (no I/O for {monitor.stall_timeout}s) "
+                    "and was terminated."
+                )
+            if rc == 0:
                 logger.info("Extraction via system tar succeeded")
                 return
-            else:
-                logger.warning(
-                    "System tar extraction failed (rc=%s). stdout: %s stderr: %s. Falling back to Python extractor.",
-                    proc.returncode,
-                    proc.stdout.strip(),
-                    proc.stderr.strip(),
-                )
+            logger.warning(
+                "System tar extraction failed (rc=%s). stdout: %s stderr: %s. "
+                "Falling back to Python extractor.",
+                rc,
+                out.decode(errors="ignore").strip() if out else "",
+                err.decode(errors="ignore").strip() if err else "",
+            )
         except FileNotFoundError:
             logger.debug("System tar not found despite shutil.which; falling back")
+        except RestoreError:
+            raise
         except Exception:
             logger.exception(
                 "System tar extraction raised unexpected error; falling back"

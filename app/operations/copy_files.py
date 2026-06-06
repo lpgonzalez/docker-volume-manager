@@ -198,7 +198,18 @@ class CopyManager:
             for f in files:
                 file_entries.append((os.path.join(rel_root, f), os.path.join(root, f)))
 
-        logger.info("Copying %d files to %s", total_files, self.output_path)
+        total_bytes = 0
+        for _rel, src_full in file_entries:
+            try:
+                total_bytes += os.lstat(src_full).st_size
+            except OSError:
+                pass
+        logger.info(
+            "Copying %d files (%d bytes) to %s",
+            total_files,
+            total_bytes,
+            self.output_path,
+        )
 
         # Create directories first and attempt to copy their metadata and ownership
         for relpath, src_full in dir_entries:
@@ -243,7 +254,10 @@ class CopyManager:
 
         # Copy files preserving metadata and ownership. Progress adapts to TTY:
         # rich bar on terminal, throttled logger.info lines to file/json handlers.
-        with ProgressReporter("Copying", total_files) as pr:
+        with ProgressReporter(
+            f"Copying (0/{total_files} files)", total_bytes, unit="bytes"
+        ) as pr:
+            done_files = 0
             for relpath, src_full in file_entries:
                 dest_full = os.path.join(self.output_path, relpath)
                 try:
@@ -267,7 +281,13 @@ class CopyManager:
                         self._set_owner(src_full, dest_full, follow_symlinks=True)
                         _copy_xattrs(src_full, dest_full)
 
-                    pr.advance()
+                    try:
+                        fsize = os.lstat(src_full).st_size
+                    except OSError:
+                        fsize = 0
+                    done_files += 1
+                    pr.advance(fsize)
+                    pr.update_description(f"Copying ({done_files}/{total_files} files)")
                 except Exception as e:
                     logger.exception(
                         "Failed to copy %s -> %s: %s", src_full, dest_full, e

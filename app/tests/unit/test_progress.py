@@ -136,6 +136,30 @@ def test_advance_negative_is_noop(no_tty):
 
 
 # ---------------------------------------------------------------------------
+# bytes unit (size-based progress)
+# ---------------------------------------------------------------------------
+
+
+def test_bytes_mode_emits_final_size_log(no_tty, caplog, reset_dvm_logger):
+    caplog.set_level("INFO", logger="dvm")
+    pr = ProgressReporter("Backup", total=1000, unit="bytes")
+    with pr:
+        pr.advance(1000)
+    msgs = [r.getMessage() for r in caplog.records if "progress:" in r.getMessage()]
+    assert msgs, "no byte-mode progress line emitted"
+    final = msgs[-1]
+    # Human-readable size + percentage + rate/eta fields.
+    assert "100%" in final
+    assert "/s" in final  # transfer rate
+    assert "elapsed" in final
+
+
+def test_bytes_mode_disabled_when_total_zero(no_tty):
+    pr = ProgressReporter("Backup", total=0, unit="bytes")
+    assert pr.enabled is False
+
+
+# ---------------------------------------------------------------------------
 # status() context manager
 # ---------------------------------------------------------------------------
 
