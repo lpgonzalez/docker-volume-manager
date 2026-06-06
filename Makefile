@@ -57,7 +57,7 @@ ts-env           = $(if $(timestamp),-e TIMESTAMP="$(timestamp)",)
 # Phony
 ##############################################################################
 
-.PHONY: help build build-prod build-test test test-unit test-functional test-integration test-integration-slow test-integration-all coverage \
+.PHONY: help build build-prod build-test test test-unit test-functional test-integration test-integration-slow test-integration-all coverage lint format \
         run-backup run-backup-encrypt run-backup-parity \
         run-restore run-verify run-copy run-rename run-interactive \
         run-volumes-list run-volumes-inspect run-volumes-create run-volumes-remove \
@@ -80,6 +80,8 @@ help:
 	@echo "  test-integration-slow                    # heavy integration: full helper pipelines"
 	@echo "  test-integration-all                     # both combined"
 	@echo "  coverage                                 # term-missing coverage (unit + functional)"
+	@echo "  lint                                     # ruff check (no changes)"
+	@echo "  format                                   # ruff format + ruff check --fix (writes)"
 	@echo ""
 	@echo "Backup / restore / verify / copy"
 	@echo "  Shared vars: backup-file-name=, compression=(NONE|GZ|ZSTD), parity=,"
@@ -185,6 +187,22 @@ coverage: build-test
 		$(image-name):$(image-version)-test \
 		pytest /app/tests -m "not integration" \
 		--cov=/app --cov-report=term-missing
+
+# Lint (read-only) and format. Both mount the repo so ruff sees pyproject.toml
+# and writes back to the host tree; -u keeps edited files owned by the caller.
+lint: build-test
+	docker run --rm --name=$(container)-lint \
+		-u "$$(id -u):$$(id -g)" \
+		-v "$(PWD):/work" -w /work \
+		$(image-name):$(image-version)-test \
+		ruff check app
+
+format: build-test
+	docker run --rm --name=$(container)-fmt \
+		-u "$$(id -u):$$(id -g)" \
+		-v "$(PWD):/work" -w /work \
+		$(image-name):$(image-version)-test \
+		sh -c "ruff format app && ruff check app --fix --exit-zero"
 
 
 ##############################################################################

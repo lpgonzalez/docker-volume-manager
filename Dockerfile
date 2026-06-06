@@ -41,8 +41,9 @@ RUN apk add --no-cache \
 COPY --from=builder /install /usr/local
 COPY app /app
 
-# pytest only in the test image — keeps runtime stage minimal
-RUN pip install --no-cache-dir pytest==8.4.2 pytest-cov==6.0.0
+# Dev-only tooling in the test image — keeps the runtime stage minimal.
+# ruff = linter + formatter (Black-style); pytest/pytest-cov = test runner.
+RUN pip install --no-cache-dir pytest==8.4.2 pytest-cov==6.0.0 ruff==0.15.16
 
 ENV PYTHONPATH=/app
 

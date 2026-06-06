@@ -1,0 +1,52 @@
+# Tooling configuration for docker-volume-manager.
+# Ruff handles both linting and formatting (Black-compatible style).
+# Pyright config is consumed by the editor LSP.
+
+[tool.ruff]
+# Application code lives under app/.
+src = ["app"]
+target-version = "py314"
+line-length = 88  # Black's default.
+extend-exclude = ["in_dir", "out_dir", "logs"]
+
+[tool.ruff.lint]
+# A pragmatic best-practice rule set:
+#   E/W  pycodestyle errors & warnings      F   pyflakes (unused, undefined, ...)
+#   I    isort (import ordering)            UP  pyupgrade (modern syntax)
+#   B    flake8-bugbear (likely bugs)       C4  flake8-comprehensions
+#   SIM  flake8-simplify                    PIE misc lints
+#   RUF  Ruff-specific rules
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "PIE", "RUF"]
+ignore = [
+    "E501",   # line length is enforced by the formatter, not the linter
+    "B008",   # function call in arg default — typer.Option(...) defaults rely on it
+    "SIM105", # contextlib.suppress over try/except/pass — clearer as-is in cleanup paths
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests favour readability over some lint rules.
+"app/tests/**" = [
+    "B011",   # assert False is fine in tests
+    "SIM117", # nested with-statements are readable in test setup
+]
+
+[tool.ruff.lint.isort]
+# Treat the app's top-level modules as first-party so imports group correctly
+# (PYTHONPATH=/app makes these absolute top-level imports).
+known-first-party = ["cli", "config", "docker_client", "gpg_keyring", "progress", "operations"]
+
+[tool.ruff.format]
+# Black-style defaults: double quotes, trailing commas, spaces.
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.pyright]
+include = ["app"]
+exclude = ["app/tests", "in_dir", "out_dir", "logs"]
+pythonVersion = "3.14"
+# The app is imported with PYTHONPATH=/app (flat top-level modules), so point
+# Pyright at the same root for import resolution.
+extraPaths = ["app"]
+typeCheckingMode = "basic"
+reportMissingImports = "warning"

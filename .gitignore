@@ -175,3 +175,6 @@ secrets/
 htmlcov/
 coverage.html
 coverage.json
+
+# Ruff linter/formatter cache
+.ruff_cache/
