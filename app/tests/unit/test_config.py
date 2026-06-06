@@ -14,7 +14,6 @@ from config import (
     Config,
 )
 
-
 # ---------------------------------------------------------------------------
 # Required fields + per-operation rules
 # ---------------------------------------------------------------------------
@@ -42,7 +41,7 @@ def test_all_valid_operations_accepted(op):
     if op not in {"COPY", "RENAME"}:
         kwargs["BACKUP_FILE_NAME"] = "test"
     cfg = Config(**kwargs)
-    assert cfg.OPERATION == op
+    assert op == cfg.OPERATION
 
 
 def test_invalid_operation_rejected():
@@ -58,7 +57,7 @@ def test_invalid_operation_rejected():
 @pytest.mark.parametrize("level", sorted(VALID_COMPRESSION))
 def test_valid_compression_levels(level):
     cfg = Config(BACKUP_FILE_NAME="x", COMPRESSION=level)
-    assert cfg.COMPRESSION == level
+    assert level == cfg.COMPRESSION
 
 
 def test_default_compression_is_zstd():
@@ -91,7 +90,7 @@ def test_compression_normalised_to_upper_case():
 @pytest.mark.parametrize("parity", [0, 1, 50, 100])
 def test_parity_within_range(parity):
     cfg = Config(BACKUP_FILE_NAME="x", PARITY=parity)
-    assert cfg.PARITY == parity
+    assert parity == cfg.PARITY
 
 
 @pytest.mark.parametrize("parity", [-1, 101, 1000])
@@ -113,7 +112,7 @@ def test_parity_non_integer_rejected():
 @pytest.mark.parametrize("level", sorted(VALID_LOG_LEVELS))
 def test_log_level_accepted(level):
     cfg = Config(BACKUP_FILE_NAME="x", LOG_LEVEL=level)
-    assert cfg.LOG_LEVEL == level
+    assert level == cfg.LOG_LEVEL
 
 
 def test_log_level_invalid_rejected():

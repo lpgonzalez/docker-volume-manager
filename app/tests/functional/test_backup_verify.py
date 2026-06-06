@@ -10,7 +10,6 @@ import pytest
 from operations.backup_files import BackupManager
 from operations.verify_backup import BackupVerifier
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
@@ -37,9 +36,7 @@ def simple_input(tmp_path):
     "compression,expected_ext",
     [("none", ".tar"), ("gz", ".tar.gz"), ("zstd", ".tar.zst")],
 )
-def test_backup_all_compressions_verify_ok(
-    simple_input, compression, expected_ext
-):
+def test_backup_all_compressions_verify_ok(simple_input, compression, expected_ext):
     input_dir, output_dir = simple_input
     manager = BackupManager(
         vol_name=f"t-{compression}",

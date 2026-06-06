@@ -1,0 +1,164 @@
+"""
+Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
+SPDX-License-Identifier: Apache-2.0
+
+Operation runners shared by the typer commands and the interactive wizard.
+
+Each ``_run_*`` builds a validated :class:`~config.Config` and dispatches it
+through :func:`_run_operation`, which owns the status-file writes and the typed
+exit codes.
+"""
+
+from __future__ import annotations
+
+import typer
+
+from cli_shared import (
+    EXIT_CONFIG,
+    EXIT_OK,
+    EXIT_OPERATION,
+    EXIT_UNHANDLED,
+    EXIT_VALIDATION,
+    _update_status,
+    err_console,
+)
+from config import Config
+
+
+def _build_config(**fields) -> Config:
+    try:
+        return Config(**fields)
+    except ValueError as exc:
+        err_console.print(f"[bold red]Invalid configuration:[/] {exc}")
+        _update_status("unhealthy")
+        raise typer.Exit(EXIT_VALIDATION) from None
+
+
+def _run_operation(cfg: Config) -> None:
+    op = cfg.OPERATION
+    logger = cfg.setup_logger()
+    _update_status("starting")
+    logger.info("Starting operation: %s", op)
+
+    try:
+        from operations.docker_volume_manager import (
+            Docker_Volume_Manager,
+        )
+    except Exception as exc:
+        logger.exception("Failed to import operations module: %s", exc)
+        _update_status("unhealthy")
+        raise typer.Exit(EXIT_CONFIG) from None
+
+    try:
+        success = Docker_Volume_Manager(cfg).run()
+    except KeyboardInterrupt:
+        logger.warning("Operation aborted by user: %s", op)
+        _update_status("unhealthy")
+        raise typer.Exit(EXIT_VALIDATION) from None
+    except Exception as exc:
+        logger.exception("Unhandled error during %s: %s", op, exc)
+        _update_status("unhealthy")
+        raise typer.Exit(EXIT_UNHANDLED) from None
+
+    if success:
+        logger.info("Operation completed successfully: %s", op)
+        _update_status("healthy")
+        raise typer.Exit(EXIT_OK)
+
+    logger.error("Operation reported failure: %s", op)
+    _update_status("unhealthy")
+    raise typer.Exit(EXIT_OPERATION)
+
+
+def _run_backup(
+    *,
+    name: str,
+    input_path: str,
+    output_path: str,
+    compression: str,
+    parity: int,
+    encryption_key: str | None,
+    recipients: list[str] | None = None,
+    sign_key: str | None = None,
+    sign_key_passphrase: str | None = None,
+    log_level: str,
+    log_output: list[str],
+) -> None:
+    cfg = _build_config(
+        OPERATION="BACKUP",
+        BACKUP_FILE_NAME=name,
+        INPUT_PATH=input_path,
+        OUTPUT_PATH=output_path,
+        COMPRESSION=compression,
+        PARITY=parity,
+        ENCRYPTION_KEY=encryption_key or "",
+        GPG_RECIPIENTS=recipients or [],
+        SIGN_KEY=sign_key or "",
+        SIGN_KEY_PASSPHRASE=sign_key_passphrase or "",
+        LOG_LEVEL=log_level,
+        LOG_OUTPUT=log_output,
+    )
+    _run_operation(cfg)
+
+
+def _run_restore(
+    *,
+    name: str,
+    input_path: str,
+    output_path: str,
+    timestamp: str | None,
+    encryption_key: str | None,
+    overwrite: bool,
+    log_level: str,
+    log_output: list[str],
+) -> None:
+    cfg = _build_config(
+        OPERATION="RESTORE",
+        BACKUP_FILE_NAME=name,
+        INPUT_PATH=input_path,
+        OUTPUT_PATH=output_path,
+        TIMESTAMP=timestamp,
+        ENCRYPTION_KEY=encryption_key or "",
+        COPY_OVERWRITE=overwrite,
+        LOG_LEVEL=log_level,
+        LOG_OUTPUT=log_output,
+    )
+    _run_operation(cfg)
+
+
+def _run_verify(
+    *,
+    name: str,
+    output_path: str,
+    encryption_key: str | None,
+    log_level: str,
+    log_output: list[str],
+) -> None:
+    cfg = _build_config(
+        OPERATION="VERIFY",
+        BACKUP_FILE_NAME=name,
+        OUTPUT_PATH=output_path,
+        ENCRYPTION_KEY=encryption_key or "",
+        LOG_LEVEL=log_level,
+        LOG_OUTPUT=log_output,
+    )
+    _run_operation(cfg)
+
+
+def _run_copy(
+    *,
+    input_path: str,
+    output_path: str,
+    overwrite: bool,
+    log_level: str,
+    log_output: list[str],
+) -> None:
+    cfg = _build_config(
+        OPERATION="COPY",
+        INPUT_PATH=input_path,
+        OUTPUT_PATH=output_path,
+        COPY_OVERWRITE=overwrite,
+        LOG_LEVEL=log_level,
+        LOG_OUTPUT=log_output,
+    )
+    _run_operation(cfg)

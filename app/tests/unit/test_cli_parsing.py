@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 import cli
-
+import runners
 
 # ---------------------------------------------------------------------------
 # backup
@@ -28,10 +28,8 @@ class TestBackup:
         # Compression validation lives inside _build_config (Config.__post_init__);
         # mock _run_operation as a safety net so we never actually execute the op
         # if validation unexpectedly passes.
-        with patch.object(cli, "_run_operation") as mock_op:
-            result = cli_runner.invoke(
-                cli.app, ["backup", "-n", "x", "-c", "BOGUS"]
-            )
+        with patch.object(runners, "_run_operation") as mock_op:
+            result = cli_runner.invoke(cli.app, ["backup", "-n", "x", "-c", "BOGUS"])
         assert result.exit_code == cli.EXIT_VALIDATION
         mock_op.assert_not_called()
 
@@ -63,10 +61,8 @@ class TestBackup:
 
     @pytest.mark.parametrize("legacy", ["LOW", "MEDIUM", "HIGH"])
     def test_legacy_compression_aliases_rejected(self, cli_runner, clean_env, legacy):
-        with patch.object(cli, "_run_operation") as mock_op:
-            result = cli_runner.invoke(
-                cli.app, ["backup", "-n", "x", "-c", legacy]
-            )
+        with patch.object(runners, "_run_operation") as mock_op:
+            result = cli_runner.invoke(cli.app, ["backup", "-n", "x", "-c", legacy])
         assert result.exit_code == cli.EXIT_VALIDATION
         mock_op.assert_not_called()
 
@@ -98,9 +94,12 @@ class TestBackup:
                 cli.app,
                 [
                     "backup",
-                    "-n", "x",
-                    "-r", "alice@example.com",
-                    "-r", "bob@example.com",
+                    "-n",
+                    "x",
+                    "-r",
+                    "alice@example.com",
+                    "-r",
+                    "bob@example.com",
                 ],
             )
         assert mock_run.call_args.kwargs["recipients"] == [
@@ -116,9 +115,12 @@ class TestBackup:
                 cli.app,
                 [
                     "backup",
-                    "-n", "x",
-                    "-k", "secret",
-                    "-r", "alice@example.com",
+                    "-n",
+                    "x",
+                    "-k",
+                    "secret",
+                    "-r",
+                    "alice@example.com",
                 ],
             )
         assert result.exit_code == cli.EXIT_VALIDATION
@@ -126,9 +128,7 @@ class TestBackup:
 
     def test_zstd_compression_accepted(self, cli_runner, clean_env):
         with patch.object(cli, "_run_backup") as mock_run:
-            result = cli_runner.invoke(
-                cli.app, ["backup", "-n", "x", "-c", "ZSTD"]
-            )
+            result = cli_runner.invoke(cli.app, ["backup", "-n", "x", "-c", "ZSTD"])
         assert result.exit_code == 0
         assert mock_run.call_args.kwargs["compression"] == "ZSTD"
 
@@ -138,13 +138,13 @@ class TestBackup:
         key_file = tmp_path / "alice.asc"
         key_file.write_text("ARMORED-BLOCK")
 
-        with patch.object(cli, "setup_recipient_keyring") as mock_setup, \
-             patch.object(cli, "tear_down_keyring") as mock_tear_down, \
-             patch.object(cli, "_run_backup") as mock_run:
+        with (
+            patch.object(cli, "setup_recipient_keyring") as mock_setup,
+            patch.object(cli, "tear_down_keyring") as mock_tear_down,
+            patch.object(cli, "_run_backup") as mock_run,
+        ):
             mock_setup.return_value = (str(tmp_path / "fake-homedir"), ["FPR_ABC"])
-            cli_runner.invoke(
-                cli.app, ["backup", "-n", "x", "-K", str(key_file)]
-            )
+            cli_runner.invoke(cli.app, ["backup", "-n", "x", "-K", str(key_file)])
 
         mock_setup.assert_called_once_with([str(key_file)])
         assert mock_run.call_args.kwargs["recipients"] == ["FPR_ABC"]
@@ -160,9 +160,13 @@ class TestBackup:
             result = cli_runner.invoke(
                 cli.app,
                 [
-                    "backup", "-n", "x",
-                    "-k", "secret",
-                    "-K", str(key_file),
+                    "backup",
+                    "-n",
+                    "x",
+                    "-k",
+                    "secret",
+                    "-K",
+                    str(key_file),
                 ],
             )
         assert result.exit_code == cli.EXIT_VALIDATION
@@ -173,14 +177,20 @@ class TestBackup:
     ):
         key_file = tmp_path / "alice.asc"
         key_file.write_text("ARMORED-BLOCK")
-        with patch.object(cli, "_run_backup") as mock_run, \
-             patch.object(cli, "setup_recipient_keyring") as mock_setup:
+        with (
+            patch.object(cli, "_run_backup") as mock_run,
+            patch.object(cli, "setup_recipient_keyring") as mock_setup,
+        ):
             result = cli_runner.invoke(
                 cli.app,
                 [
-                    "backup", "-n", "x",
-                    "-K", str(key_file),
-                    "--input-volume", "src",
+                    "backup",
+                    "-n",
+                    "x",
+                    "-K",
+                    str(key_file),
+                    "--input-volume",
+                    "src",
                 ],
             )
         assert result.exit_code == cli.EXIT_VALIDATION
@@ -192,9 +202,13 @@ class TestBackup:
             cli_runner.invoke(
                 cli.app,
                 [
-                    "backup", "-n", "x",
-                    "--sign-key", "ABCD1234",
-                    "--sign-key-passphrase", "secret",
+                    "backup",
+                    "-n",
+                    "x",
+                    "--sign-key",
+                    "ABCD1234",
+                    "--sign-key-passphrase",
+                    "secret",
                 ],
             )
         kwargs = mock_run.call_args.kwargs
@@ -232,9 +246,7 @@ class TestRestore:
 
     def test_no_overwrite_flag(self, cli_runner, clean_env):
         with patch.object(cli, "_run_restore") as mock_run:
-            cli_runner.invoke(
-                cli.app, ["restore", "-n", "x", "--no-overwrite"]
-            )
+            cli_runner.invoke(cli.app, ["restore", "-n", "x", "--no-overwrite"])
         assert mock_run.call_args.kwargs["overwrite"] is False
 
 

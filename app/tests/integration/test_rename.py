@@ -52,9 +52,7 @@ def test_rename_keep_source_preserves_original(docker_client, volume_with_data):
     target = f"dvm-test-renamed-{uuid.uuid4().hex[:8]}"
     source = volume_with_data
     try:
-        result = rename_volume(
-            source, target, keep_source=True, client=docker_client
-        )
+        result = rename_volume(source, target, keep_source=True, client=docker_client)
         assert result.source_deleted is False
         assert docker_client.volume_exists(source) is True
         assert docker_client.volume_exists(target) is True

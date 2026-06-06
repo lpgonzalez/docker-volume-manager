@@ -26,6 +26,7 @@ def test_copy_preserves_tree(tmp_path, data_tree, fingerprint):
         a_type, a_size, a_mode, a_uid, a_gid, a_content = after[rel]
         assert a_type == b_type, f"type mismatch at {rel}"
         assert a_size == b_size, f"size mismatch at {rel}"
+        assert a_mode == b_mode, f"mode mismatch at {rel}"
         assert a_content == b_content, f"content mismatch at {rel}"
         # CopyManager uses shutil.copy2 + chown; ownership preserved only as root.
         if compare_ownership:

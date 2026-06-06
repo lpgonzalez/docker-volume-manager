@@ -1,11 +1,7 @@
 """
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
-"""
 
-from __future__ import annotations
-
-"""
 Ephemeral GPG keyring helpers — let users pass `--recipient-key-file alice.asc`
 without having to pre-import keys into ~/.gnupg.
 
@@ -16,13 +12,14 @@ for setting `GNUPGHOME` to that homedir for the duration of the gpg pipeline,
 and for removing the directory afterwards (use `tear_down_keyring`).
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import shutil
 import stat
 import subprocess
 import tempfile
-from typing import List, Tuple
 
 logger = logging.getLogger("dvm")
 
@@ -31,7 +28,7 @@ class KeyringError(RuntimeError):
     """Raised when a public key file cannot be imported or fingerprinted."""
 
 
-def setup_recipient_keyring(paths: List[str]) -> Tuple[str, List[str]]:
+def setup_recipient_keyring(paths: list[str]) -> tuple[str, list[str]]:
     """
     Create a throwaway GNUPGHOME and import the given public key files.
 
@@ -72,7 +69,7 @@ def setup_recipient_keyring(paths: List[str]) -> Tuple[str, List[str]]:
             capture_output=True,
             text=True,
         )
-        fingerprints: List[str] = []
+        fingerprints: list[str] = []
         for line in result.stdout.splitlines():
             # gpg --with-colons emits one line per key field; `fpr:` carries the
             # full 40-char fingerprint at column 10.
@@ -88,7 +85,7 @@ def setup_recipient_keyring(paths: List[str]) -> Tuple[str, List[str]]:
 
         # Some key files include subkeys; deduplicate while preserving order.
         seen = set()
-        unique: List[str] = []
+        unique: list[str] = []
         for fp in fingerprints:
             if fp not in seen:
                 seen.add(fp)

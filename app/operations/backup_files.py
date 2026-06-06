@@ -1,58 +1,49 @@
 """
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
-"""
 
-"""
-Backup manager: create tar archives with maximum metadata preservation (PAX format),
-optionally encrypt and/or create parity files.
+Backup manager: create tar archives with maximum metadata preservation (PAX
+format), optionally encrypt and/or create parity files.
 
 Notes about restoration:
-- Tar archives created by this module store uid/gid and, when resolvable, uname/gname.
-  Restoring original owners requires running the extraction as root and using the
-  appropriate tar flags, for example:
-    sudo tar -xJpf archive.tar.xz --same-owner -C /target
-  or when using Python's tarfile:
-    with tarfile.open("archive.tar.bz2", "r:bz2") as t:
-        t.extractall(path="/target", numeric_owner=True)
-- If you extract as a non-root user, owner/group will be set to the extracting user (this is expected).
+- Archives store numeric uid/gid and, when resolvable, uname/gname. Restoring
+  the original owners requires extracting as root with numeric ownership, e.g.:
+    tar --same-owner --numeric-owner -xpf archive.tar.gz -C /target
+  (zstd archives need ``--zstd``), or with Python's tarfile:
+    with tarfile.open("archive.tar.zst") as t:
+        t.extractall(path="/target", numeric_owner=True, filter="fully_trusted")
+- Extracting as a non-root user sets owner/group to the extracting user
+  (expected).
 """
+
 import grp
 import logging
 import os
 import pwd
 import re
-import shutil
 import subprocess
 import tarfile
+import tempfile
 import time
-from typing import List, Optional, Tuple
 
-import gnupg
-
+from operations import codecs
 from progress import ProgressReporter, status
 
 logger = logging.getLogger("dvm")
 
 
-def _resolve_compressor(compression: str) -> Optional[List[str]]:
-    """
-    Pick the best subprocess compressor command for the pipeline.
+def _passphrase_read_fd(passphrase: str) -> int:
+    """Stage ``passphrase`` in an OS pipe and return its read end.
 
-    Returns the argv list. For gz, uses pigz (multi-threaded) when available
-    and falls back to gzip. For zstd, uses zstd at level -19 with all cores.
-    Returns None for the "no compression" case.
+    The fd is meant for ``gpg --passphrase-fd``: this keeps the secret out of
+    the process argv (which is world-readable via ``ps`` / ``/proc/<pid>/cmdline``).
+    The caller must pass the fd in ``Popen(pass_fds=...)`` and close its own copy
+    afterwards. Passphrases are tiny, so the write never blocks on the pipe buffer.
     """
-    if compression == "gz":
-        binary = "pigz" if shutil.which("pigz") else "gzip"
-        return [binary, "-c"]
-    if compression == "zstd":
-        # `-T0` joined: zstd's `-T` is parsed as an attached short option.
-        # `-19` is "max practical" — close to xz ratio without the memory
-        # blow-up of `--ultra -22` (which adds only 2-3% more compression at
-        # 5-10x the memory cost).
-        return ["zstd", "-c", "-q", "-T0", "-19"]
-    return None
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, (passphrase + "\n").encode("utf-8"))
+    os.close(write_fd)
+    return read_fd
 
 
 def _uname_from_uid(uid: int) -> str:
@@ -118,12 +109,12 @@ class BackupManager:
         input_path: str,
         output_path: str,
         compression: str = "gz",
-        password: Optional[str] = None,
-        gpg_recipients: Optional[List[str]] = None,
+        password: str | None = None,
+        gpg_recipients: list[str] | None = None,
         create_parity: bool = False,
-        parity_percentage: Optional[int] = None,
-        sign_key: Optional[str] = None,
-        sign_key_passphrase: Optional[str] = None,
+        parity_percentage: int | None = None,
+        sign_key: str | None = None,
+        sign_key_passphrase: str | None = None,
     ):
         self.vol_name = vol_name
         self.input_path = os.path.abspath(input_path)
@@ -139,13 +130,6 @@ class BackupManager:
             if parity_percentage and 1 <= parity_percentage <= 100
             else 10
         )
-
-        try:
-            self.gpg = gnupg.GPG()
-            logger.debug("Initialized GPG instance for BackupManager")
-        except Exception as e:
-            logger.error("Failed to initialize GPG: %s", e)
-            self.gpg = None
 
         logger.debug(
             "BackupManager initialized vol=%s input=%s output=%s compression=%s parity=%s",
@@ -186,7 +170,7 @@ class BackupManager:
     # -------------------------
     # Helpers for output layout
     # -------------------------
-    def _prepare_output_dirs(self) -> Tuple[str, str]:
+    def _prepare_output_dirs(self) -> tuple[str, str]:
         """
         Ensure output_path exists and is writable, then create:
         output_path/<vol_name>/<YYYYmmdd_HHMM>[_NN]/
@@ -202,9 +186,11 @@ class BackupManager:
             with open(testfile, "w") as f:
                 f.write("ok")
             os.remove(testfile)
-        except Exception:
+        except Exception as exc:
             logger.error("Output path is not writable: %s", self.output_path)
-            raise PermissionError(f"Output path is not writable: {self.output_path}")
+            raise PermissionError(
+                f"Output path is not writable: {self.output_path}"
+            ) from exc
 
         backup_dir = os.path.join(self.output_path, self.vol_name)
         try:
@@ -236,11 +222,7 @@ class BackupManager:
     # Compression helpers (PAX + explicit meta)
     # -------------------------
     def _get_ext(self) -> str:
-        return {
-            "gz": ".tar.gz",
-            "zstd": ".tar.zst",
-            "none": ".tar",
-        }.get(self.compression, ".tar")
+        return codecs.ext_for(self.compression)
 
     def _open_tar(self, path: str, mode: str) -> tarfile.TarFile:
         """
@@ -360,7 +342,7 @@ class BackupManager:
             self._log_operation_end("BACKUP", success=False)
             raise FileNotFoundError(f"Input path not found: {self.input_path}")
 
-        backup_dir, ts_dir = self._prepare_output_dirs()
+        _backup_dir, ts_dir = self._prepare_output_dirs()
 
         ext = self._get_ext()
         archive_name = f"{self.vol_name}{ext}"
@@ -379,11 +361,7 @@ class BackupManager:
 
         try:
             # zstd: Python 3.14's tarfile supports "w:zst" directly (PEP 784).
-            mode = (
-                "w"
-                if self.compression == "none"
-                else {"gz": "w:gz", "zstd": "w:zst"}[self.compression]
-            )
+            mode = codecs.write_mode(self.compression)
             tar = self._open_tar(archive_path, mode)
             try:
                 for dpath in dir_list:
@@ -426,104 +404,15 @@ class BackupManager:
             raise
 
     # -------------------------
-    # Encryption
+    # Encrypted pipeline (the only encryption path)
     # -------------------------
-    def encrypt(self, file_path: str) -> str:
-        logger.info("Encrypting file: %s", file_path)
-        if not os.path.isfile(file_path):
-            logger.error("File to encrypt not found: %s", file_path)
-            raise FileNotFoundError(f"File to encrypt not found: {file_path}")
-
-        if not self.gpg:
-            logger.error("GPG not initialized")
-            raise RuntimeError("GPG not initialized")
-
-        encrypted_path = file_path + ".gpg"
-        try:
-            size = os.path.getsize(file_path)
-            logger.info("File size to encrypt: %d bytes", size)
-            with open(file_path, "rb") as f:
-                if self.gpg_recipients:
-                    logger.info(
-                        "Using public-key encryption for recipients: %s",
-                        self.gpg_recipients,
-                    )
-                    with status("Encrypting (public-key)"):
-                        result = self.gpg.encrypt_file(
-                            f,
-                            recipients=self.gpg_recipients,
-                            output=encrypted_path,
-                            armor=False,
-                        )
-                elif self.password:
-                    logger.info("Using symmetric encryption (passphrase provided)")
-                    with status("Encrypting (symmetric)"):
-                        result = self.gpg.encrypt_file(
-                            f,
-                            symmetric=True,
-                            passphrase=self.password,
-                            output=encrypted_path,
-                            armor=False,
-                        )
-                else:
-                    logger.info("No encryption requested, returning original file path")
-                    return file_path
-
-            if not result.ok:
-                logger.error(
-                    "GPG encryption failed: %s", getattr(result, "status", "unknown")
-                )
-                try:
-                    if os.path.exists(encrypted_path):
-                        os.remove(encrypted_path)
-                except Exception:
-                    logger.debug(
-                        "Failed to remove incomplete encrypted file: %s", encrypted_path
-                    )
-                raise RuntimeError(
-                    f"GPG encryption failed: {getattr(result, 'status', 'unknown')}"
-                )
-
-            try:
-                os.remove(file_path)
-                logger.debug("Removed original file after encryption: %s", file_path)
-            except Exception as e:
-                logger.warning(
-                    "Could not remove original file %s after encryption: %s",
-                    file_path,
-                    e,
-                )
-
-            logger.info("Encryption successful: %s", encrypted_path)
-            return encrypted_path
-        except Exception as e:
-            logger.exception("Encryption error for %s: %s", file_path, e)
-            raise
-
-    # -------------------------
-    # Combined operations
-    # -------------------------
-    def compress_and_encrypt(self) -> str:
-        self._log_operation_start("BACKUP")
-        try:
-            archive_path = self.compress()
-            encrypted_path = self.encrypt(archive_path)
-            if self.create_parity:
-                logger.info("Generating parity files for %s", encrypted_path)
-                self._create_parity(encrypted_path, self.parity_percentage)
-            self._log_operation_end("BACKUP", success=True)
-            return encrypted_path
-        except Exception as e:
-            logger.exception("compress_and_encrypt failed: %s", e)
-            self._log_operation_end("BACKUP", success=False)
-            raise
-
     def compress_and_encrypt_pipeline(self) -> str:
         """
         Encrypted-backup pipeline: ``tar | <compressor> | gpg``.
 
         Uses three Popen processes connected through OS pipes. Compressor is
-        chosen by :func:`_resolve_compressor` (multi-threaded when available).
+        chosen by the codec registry (:mod:`operations.codecs`, multi-threaded
+        when available).
         gpg runs in symmetric mode when ``self.password`` is set, or in
         public-key mode against ``self.gpg_recipients``.
 
@@ -550,7 +439,7 @@ class BackupManager:
             self._log_operation_end("BACKUP", success=False)
             raise FileNotFoundError(f"Input path not found: {self.input_path}")
 
-        backup_dir, ts_dir = self._prepare_output_dirs()
+        _backup_dir, ts_dir = self._prepare_output_dirs()
 
         ext = self._get_ext()
         archive_name = f"{self.vol_name}{ext}.gpg"
@@ -561,21 +450,38 @@ class BackupManager:
 
         # Build tar command with PAX format and archive contents ('.')
         tar_cmd = ["tar", "--format=pax", "-c", "-C", self.input_path, "."]
-        comp_cmd = _resolve_compressor(self.compression) or []
+        comp_cmd = codecs.compressor_argv(self.compression) or []
 
+        # The passphrase fd (symmetric mode) is created just before spawning gpg
+        # so an early failure can't leak it; tracked here for cleanup.
+        passphrase_fd: int | None = None
         if self.password:
+            passphrase_fd = _passphrase_read_fd(self.password)
             gpg_cmd = [
                 "gpg",
                 "--batch",
                 "--yes",
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase-fd",
+                str(passphrase_fd),
                 "--symmetric",
-                "--passphrase",
-                self.password,
                 "-o",
                 archive_path,
             ]
         elif self.gpg_recipients:
-            gpg_cmd = ["gpg", "--encrypt", "-o", archive_path]
+            # --batch --yes so a TTY-less run never blocks on a trust prompt;
+            # trust-model always mirrors the throwaway-keyring design.
+            gpg_cmd = [
+                "gpg",
+                "--batch",
+                "--yes",
+                "--trust-model",
+                "always",
+                "--encrypt",
+                "-o",
+                archive_path,
+            ]
             for recipient in self.gpg_recipients:
                 gpg_cmd += ["--recipient", recipient]
         else:
@@ -588,11 +494,17 @@ class BackupManager:
             )
 
         tar_proc = comp_proc = gpg_proc = None
+        # Intermediate stderr goes to temp files, NOT PIPE: with PIPE we'd only
+        # drain it after gpg.communicate(), so a chatty tar/compressor (e.g. many
+        # "file changed as we read it" warnings on a live volume) could fill the
+        # ~64 KB pipe buffer, block on write, and deadlock the whole pipeline.
+        # Deliberately not context-managed: these outlive the `with` and are
+        # closed in the finally block after the subprocesses have been waited on.
+        tar_err = tempfile.TemporaryFile()  # noqa: SIM115
+        comp_err = tempfile.TemporaryFile()  # noqa: SIM115
         try:
             logger.info("Starting tar process: %s", " ".join(tar_cmd))
-            tar_proc = subprocess.Popen(
-                tar_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
+            tar_proc = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE, stderr=tar_err)
             prev_proc = tar_proc
 
             if comp_cmd:
@@ -601,7 +513,7 @@ class BackupManager:
                     comp_cmd,
                     stdin=tar_proc.stdout,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stderr=comp_err,
                 )
                 if tar_proc.stdout:
                     tar_proc.stdout.close()
@@ -613,38 +525,38 @@ class BackupManager:
                 stdin=prev_proc.stdout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                # Inherit only the passphrase read-end (symmetric mode); harmless
+                # empty tuple otherwise.
+                pass_fds=(passphrase_fd,) if passphrase_fd is not None else (),
             )
             if prev_proc and prev_proc.stdout:
                 prev_proc.stdout.close()
+            # Parent no longer needs the passphrase fd once gpg holds its copy.
+            if passphrase_fd is not None:
+                os.close(passphrase_fd)
+                passphrase_fd = None
 
-            gpg_out, gpg_err = gpg_proc.communicate()
+            _gpg_out, gpg_err = gpg_proc.communicate()
             gpg_rc = gpg_proc.returncode
 
             tar_rc = tar_proc.wait() if tar_proc else 0
             comp_rc = comp_proc.wait() if comp_proc else 0
 
-            # read and close std errs
-            try:
-                if tar_proc and tar_proc.stderr:
-                    tar_stderr = tar_proc.stderr.read()
-                    if tar_stderr:
+            # Intermediate stderr was buffered to temp files; read it now.
+            def _log_err_file(handle, label: str) -> None:
+                try:
+                    handle.seek(0)
+                    data = handle.read()
+                    if data:
                         logger.debug(
-                            "tar stderr: %s", tar_stderr.decode(errors="ignore")
+                            "%s stderr: %s", label, data.decode(errors="ignore")
                         )
-                    tar_proc.stderr.close()
-            except Exception:
-                logger.debug("Failed to read/close tar stderr")
+                except Exception:
+                    logger.debug("Failed to read %s stderr", label)
 
-            try:
-                if comp_proc and comp_proc.stderr:
-                    comp_stderr = comp_proc.stderr.read()
-                    if comp_stderr:
-                        logger.debug(
-                            "comp stderr: %s", comp_stderr.decode(errors="ignore")
-                        )
-                    comp_proc.stderr.close()
-            except Exception:
-                logger.debug("Failed to read/close comp stderr")
+            _log_err_file(tar_err, "tar")
+            if comp_proc:
+                _log_err_file(comp_err, "comp")
 
             try:
                 if gpg_proc and gpg_proc.stderr:
@@ -697,6 +609,17 @@ class BackupManager:
             self._log_operation_end("BACKUP", success=False)
             raise
         finally:
+            # Close the passphrase fd if an early failure left it open.
+            if passphrase_fd is not None:
+                try:
+                    os.close(passphrase_fd)
+                except OSError:
+                    pass
+            for handle in (tar_err, comp_err):
+                try:
+                    handle.close()
+                except Exception:
+                    pass
             for proc in (tar_proc, comp_proc, gpg_proc):
                 if proc is None:
                     continue
@@ -794,7 +717,7 @@ class BackupManager:
     # -------------------------
     # Detached signing
     # -------------------------
-    def sign_archive(self, archive_path: str) -> Optional[str]:
+    def sign_archive(self, archive_path: str) -> str | None:
         """
         Produce a detached GPG signature next to the archive. Returns the
         signature path (`<archive>.sig`) on success, or None when no signing
@@ -810,29 +733,34 @@ class BackupManager:
 
         sig_path = archive_path + ".sig"
         cmd = ["gpg", "--batch", "--yes"]
+        sign_input: bytes | None = None
         if self.sign_key_passphrase:
-            # Required so gpg accepts a passphrase via stdin/argv with no agent.
-            cmd += ["--pinentry-mode", "loopback", "--passphrase", self.sign_key_passphrase]
+            # Feed the passphrase via stdin (fd 0) with loopback pinentry, never
+            # via argv (which is world-readable through ps / /proc/<pid>/cmdline).
+            cmd += ["--pinentry-mode", "loopback", "--passphrase-fd", "0"]
+            sign_input = (self.sign_key_passphrase + "\n").encode("utf-8")
         cmd += [
-            "--local-user", self.sign_key,
+            "--local-user",
+            self.sign_key,
             "--detach-sign",
-            "--output", sig_path,
+            "--output",
+            sig_path,
             archive_path,
         ]
 
         logger.info("Creating detached signature with key %s", self.sign_key)
         try:
             with status("Signing archive"):
-                proc = subprocess.run(cmd, capture_output=True)
+                proc = subprocess.run(cmd, input=sign_input, capture_output=True)
         except Exception as exc:
             logger.exception("Signing subprocess failed to start: %s", exc)
             raise
 
         if proc.returncode != 0:
-            stderr = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
-            logger.error(
-                "Signing failed (rc=%s): %s", proc.returncode, stderr.strip()
+            stderr = (
+                proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
             )
+            logger.error("Signing failed (rc=%s): %s", proc.returncode, stderr.strip())
             try:
                 if os.path.exists(sig_path):
                     os.remove(sig_path)
@@ -845,7 +773,7 @@ class BackupManager:
     # -------------------------
     # Misc utilities
     # -------------------------
-    def get_directory_statistics(self, path: Optional[str] = None):
+    def get_directory_statistics(self, path: str | None = None):
         if path is None:
             path = self.input_path
         num_files = 0

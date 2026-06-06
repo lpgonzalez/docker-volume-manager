@@ -1,26 +1,25 @@
 """
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
-"""
 
-from __future__ import annotations
-
-"""
 Restore manager: locate a backup and restore it to a target directory preserving metadata.
 
 Behaviour (high level):
 - Validate that a backup base name (vol_name) exists under input_path and contains at least one
   timestamped subdirectory (YYYYmmdd_HHMM[_NN]).
 - If TIMESTAMP not provided, selects the most recent timestamp subdirectory.
-- Locates a backup archive inside that timestamp directory (supports .tar, .tar.gz, .tar.bz2, .tar.xz)
+- Locates a backup archive inside that timestamp directory (supports .tar, .tar.gz, .tar.zst)
   and optionally encrypted files ending with .gpg.
 - If parity (.par2) files exist for the archive, verifies and attempts repair prior to restore.
 - If encrypted (.gpg), attempts decryption using ENCRYPTION_KEY env var (best-effort).
-- Extracts the tar archive into output_path attempting to preserve owners, groups, permissions,
-  timestamps and extended attributes (when possible). Logs note that restoring owners requires
-  running as root / using numeric_owner / --same-owner on tar.
+- Extracts the tar archive into output_path preserving owners, groups, permissions,
+  timestamps and extended attributes. Restoring owners requires running as root; extraction
+  uses numeric ownership (--numeric-owner / numeric_owner=True).
 - Detailed logging and robust error handling consistent with the rest of the project.
 """
+
+from __future__ import annotations
+
 import logging
 import os
 import re
@@ -28,25 +27,27 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
-from typing import List, Optional, Tuple
 
 import gnupg
 
+from operations import codecs
+from operations.fs_overwrite import (
+    clear_directory_contents,
+    is_nonempty,
+    should_overwrite,
+)
 from progress import status
 
 logger = logging.getLogger("dvm")
 
-# Supported archive extensions (longest first to match correctly)
-_ARCHIVE_EXTS = [".tar.gz", ".tar.zst", ".tar"]
+# Supported archive extensions (longest first to match correctly).
+_ARCHIVE_EXTS = codecs.ARCHIVE_EXTS
 
 _PAX_MSG = (
     "Archives are created using PAX format and include uid/gid and uname/gname when resolvable. "
     "To restore original owners you must extract as root and use --same-owner / numeric_owner "
     "or extract with a tool that supports PAX owner restoration."
 )
-
-# Values considered as affirmative for overwrite
-_YES_VALUES = {"y", "yes", "Y", "YES"}
 
 
 class RestoreError(Exception):
@@ -66,7 +67,7 @@ def _find_backup_base(input_dir: str, vol_name: str) -> str:
     return base
 
 
-def _select_timestamp_dir(base_dir: str, requested_ts: Optional[str] = None) -> str:
+def _select_timestamp_dir(base_dir: str, requested_ts: str | None = None) -> str:
     entries = []
     try:
         for entry in os.listdir(base_dir):
@@ -99,12 +100,12 @@ def _select_timestamp_dir(base_dir: str, requested_ts: Optional[str] = None) -> 
     return chosen
 
 
-def _find_archive_in_ts_dir(ts_dir: str) -> Tuple[str, bool]:
+def _find_archive_in_ts_dir(ts_dir: str) -> tuple[str, bool]:
     """
     Returns tuple (archive_path, encrypted_flag)
     Looks for supported archive file names inside ts_dir.
     """
-    candidates: List[str] = []
+    candidates: list[str] = []
     try:
         for fname in os.listdir(ts_dir):
             # skip directories
@@ -140,7 +141,7 @@ def _find_archive_in_ts_dir(ts_dir: str) -> Tuple[str, bool]:
     return chosen, encrypted
 
 
-def _has_parity_for(path: str) -> Optional[str]:
+def _has_parity_for(path: str) -> str | None:
     """
     If a .par2 file exists referring to the archive, return its path, else None.
     Look for both <archive>.par2 and <archive_basename>.par2
@@ -191,13 +192,13 @@ def _run_par2_verify_or_repair(par2_path: str, archive_path: str) -> None:
         logger.info("par2 repair succeeded for %s", archive_path)
     except FileNotFoundError:
         logger.error("par2 executable not found; cannot verify/repair parity.")
-        raise RestoreError("par2 not available")
+        raise RestoreError("par2 not available") from None
     except Exception as e:
         logger.exception("Unexpected par2 error: %s", e)
-        raise RestoreError("par2 error")
+        raise RestoreError("par2 error") from e
 
 
-def _decrypt_gpg_file(enc_path: str, passphrase: Optional[str], out_dir: str) -> str:
+def _decrypt_gpg_file(enc_path: str, passphrase: str | None, out_dir: str) -> str:
     """
     Decrypt .gpg file to a temporary file inside out_dir using gnupg library.
     Returns path to decrypted file. Raises RestoreError on failure.
@@ -209,19 +210,14 @@ def _decrypt_gpg_file(enc_path: str, passphrase: Optional[str], out_dir: str) ->
 
     try:
         g = gnupg.GPG()
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to initialize GPG library")
-        raise RestoreError("GPG initialization failed")
+        raise RestoreError("GPG initialization failed") from exc
 
     # Preserve the inner compression extension in the tempfile name so
-    # _determine_tar_mode picks the right decompressor later.
-    # `foo.tar.xz.gpg` -> suffix `.tar.xz`.
-    inner_suffix = ".tar"
-    lower_enc = enc_path.lower()
-    for ext in (".tar.gz", ".tar.zst"):
-        if lower_enc.endswith(ext + ".gpg"):
-            inner_suffix = ext
-            break
+    # _determine_tar_mode picks the right decompressor later
+    # (`foo.tar.zst.gpg` -> suffix `.tar.zst`).
+    inner_suffix = codecs.inner_archive_suffix(enc_path)
     tmp_fd, tmp_path = tempfile.mkstemp(
         prefix="dvm_decrypted_", dir=out_dir, suffix=inner_suffix
     )
@@ -247,73 +243,11 @@ def _decrypt_gpg_file(enc_path: str, passphrase: Optional[str], out_dir: str) ->
                 os.remove(tmp_path)
         except Exception:
             pass
-        raise RestoreError("Decryption failed")
+        raise RestoreError("Decryption failed") from e
 
 
 def _determine_tar_mode(archive_name: str) -> str:
-    lower = archive_name.lower()
-    if lower.endswith(".tar.gz") or lower.endswith(".tgz"):
-        return "r:gz"
-    if lower.endswith(".tar.zst") or lower.endswith(".tzst"):
-        return "r:zst"
-    if lower.endswith(".tar"):
-        return "r:"
-    # fallback to auto-detect
-    return "r:*"
-
-
-def _is_output_nonempty(path: str) -> bool:
-    try:
-        return bool(os.listdir(path))
-    except Exception:
-        # if path is not readable or similar, consider as non-empty to avoid accidental overwrite
-        return True
-
-
-def _clear_directory_contents(path: str) -> None:
-    logger.info("Clearing contents of destination: %s", path)
-    for entry in os.listdir(path):
-        full = os.path.join(path, entry)
-        try:
-            if os.path.isdir(full) and not os.path.islink(full):
-                shutil.rmtree(full)
-            else:
-                os.remove(full)
-        except Exception as e:
-            logger.exception(
-                "Failed to remove %s while clearing destination: %s", full, e
-            )
-            raise
-
-
-def _should_overwrite(dest: str, overwrite: bool) -> bool:
-    """Decide overwrite behaviour from the explicit policy flag and interactivity."""
-    if overwrite:
-        logger.info(
-            "Overwrite policy: overwrite=True, proceeding without prompt."
-        )
-        return True
-
-    if os.isatty(0):
-        try:
-            logger.info(
-                "Destination %s contains files. overwrite=False — asking user for confirmation.",
-                dest,
-            )
-            resp = input(f"Destination '{dest}' is not empty. Overwrite? [Y/n]: ")
-            if resp.strip() in _YES_VALUES or resp.strip() == "":
-                logger.info("User confirmed overwrite.")
-                return True
-            logger.info("User denied overwrite.")
-            return False
-        except Exception:
-            logger.warning("Interactive confirmation failed; defaulting to overwrite")
-            return True
-
-    logger.info(
-        "Non-interactive environment with overwrite=False: defaulting to overwrite."
-    )
-    return True
+    return codecs.read_mode_for_path(archive_name)
 
 
 def _log_archive_owner_summary(archive_path: str) -> None:
@@ -355,7 +289,9 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
     mode = _determine_tar_mode(archive_path)
     logger.debug("Determined tar mode %s for %s", mode, archive_path)
 
-    # first, open archive to perform safety checks (avoid path traversal)
+    # First, open the archive to perform safety checks (avoid path traversal).
+    # This pre-scan is authoritative: extraction is then delegated to system tar,
+    # which does NOT re-validate, so any escaping member/link must be rejected here.
     try:
         with tarfile.open(archive_path, mode) as tf:
 
@@ -374,12 +310,33 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
                         member.name,
                     )
                     raise RestoreError("Unsafe archive member path")
+                # Symlinks/hardlinks: the link target must also stay inside
+                # dest_dir, else a later member could be written through it to an
+                # arbitrary location. Absolute targets are rejected outright;
+                # relative ones are resolved against the link's own directory.
+                if member.issym() or member.islnk():
+                    if os.path.isabs(member.linkname):
+                        logger.error(
+                            "Absolute link target in archive member %s -> %s",
+                            member.name,
+                            member.linkname,
+                        )
+                        raise RestoreError("Unsafe archive link target")
+                    link_base = os.path.dirname(member_path)
+                    link_target = os.path.join(link_base, member.linkname)
+                    if not _is_within_directory(dest_dir, link_target):
+                        logger.error(
+                            "Link target escapes destination in member %s -> %s",
+                            member.name,
+                            member.linkname,
+                        )
+                        raise RestoreError("Unsafe archive link target")
     except tarfile.ReadError:
         logger.exception("Archive is unreadable or corrupted: %s", archive_path)
-        raise RestoreError("Archive unreadable or corrupted")
+        raise RestoreError("Archive unreadable or corrupted") from None
     except Exception as e:
         logger.exception("Unexpected error while inspecting archive: %s", e)
-        raise RestoreError("Archive inspection failed")
+        raise RestoreError("Archive inspection failed") from e
 
     # Try system tar first (preferred for correct owner restoration)
     tar_bin = shutil.which("tar")
@@ -392,16 +349,16 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
             "--directory",
             dest_dir,
             "--same-owner",
+            # Restore the exact numeric uid/gid from the archive instead of
+            # mapping by user/group name. Critical for Docker volume restores:
+            # services like PostgreSQL or web servers key off the numeric owner,
+            # which must survive even when the target host lacks the same names.
+            "--numeric-owner",
             "--preserve-permissions",
         ]
-        lower = archive_path.lower()
-        # add decompression short flags when appropriate
-        if lower.endswith((".tar.gz", ".tgz")):
-            cmd.insert(1, "-z")
-        elif lower.endswith((".tar.zst", ".tzst")):
-            # GNU tar doesn't have a short flag for zstd; delegate via -I.
-            cmd.insert(1, "zstd")
-            cmd.insert(1, "-I")
+        # Insert decompression flags right after the tar binary (e.g. "-z" for
+        # gzip, "-I zstd" for zstd). Driven by the codec registry.
+        cmd[1:1] = codecs.system_tar_decompress_flags(archive_path)
 
         logger.debug("Attempting extraction with system tar: %s", " ".join(cmd))
         try:
@@ -424,34 +381,36 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
                 "System tar extraction raised unexpected error; falling back"
             )
 
-    # Fallback to Python tarfile extraction (use numeric_owner when available)
+    # Fallback to Python tarfile extraction. numeric_owner=True restores the
+    # exact archived uid/gid (see the system-tar note above on why that matters).
+    # filter="fully_trusted" preserves EVERYTHING — ownership, mode, and the
+    # setuid/setgid/sticky bits — which is the whole point of a volume backup
+    # tool. The stock "data"/"tar" filters strip those high bits, so we don't use
+    # them; traversal safety is already guaranteed by the authoritative pre-scan
+    # above (member names AND link targets are validated before we get here).
     try:
-        with tarfile.open(archive_path, mode) as tf:
-            with status("Extracting archive (python tarfile)"):
-                try:
-                    tf.extractall(path=dest_dir, numeric_owner=True)
-                except TypeError:
-                    logger.warning(
-                        "tarfile.extractall does not support numeric_owner on this platform; owners may not be restored."
-                    )
-                    tf.extractall(path=dest_dir)
+        with (
+            tarfile.open(archive_path, mode) as tf,
+            status("Extracting archive (python tarfile)"),
+        ):
+            tf.extractall(path=dest_dir, numeric_owner=True, filter="fully_trusted")
     except tarfile.ReadError:
         logger.exception("Archive is unreadable or corrupted: %s", archive_path)
-        raise RestoreError("Archive unreadable or corrupted")
+        raise RestoreError("Archive unreadable or corrupted") from None
     except PermissionError as e:
         logger.exception("Permission error while extracting to %s: %s", dest_dir, e)
-        raise RestoreError("Permission denied during extraction")
+        raise RestoreError("Permission denied during extraction") from e
     except Exception as e:
         logger.exception("Unexpected error during extraction: %s", e)
-        raise RestoreError("Extraction failed")
+        raise RestoreError("Extraction failed") from e
 
 
 def restore(
     vol_name: str,
     input_path: str,
     output_path: str,
-    timestamp: Optional[str] = None,
-    encryption_key: Optional[str] = None,
+    timestamp: str | None = None,
+    encryption_key: str | None = None,
     overwrite: bool = True,
 ) -> str:
     """
@@ -515,9 +474,9 @@ def restore(
     # Validate output path exists (create if missing)
     try:
         os.makedirs(output_path, exist_ok=True)
-    except Exception:
+    except Exception as exc:
         logger.exception("Unable to create output path: %s", output_path)
-        raise RestoreError("Cannot prepare output directory")
+        raise RestoreError("Cannot prepare output directory") from exc
 
     # Locate backup base and timestamp dir
     try:
@@ -525,14 +484,14 @@ def restore(
         ts_dir = _select_timestamp_dir(base_dir, timestamp)
     except Exception as e:
         logger.error("Failed to locate backup to restore: %s", e)
-        raise RestoreError("Backup not found")
+        raise RestoreError("Backup not found") from e
 
     # Find archive and whether encrypted
     try:
         archive_path, encrypted = _find_archive_in_ts_dir(ts_dir)
     except Exception as e:
         logger.error("No suitable archive found in %s: %s", ts_dir, e)
-        raise RestoreError("Archive not found")
+        raise RestoreError("Archive not found") from e
 
     # Check readability
     if not os.access(archive_path, os.R_OK):
@@ -550,28 +509,28 @@ def restore(
 
     # If output directory is non-empty handle overwrite policy (mirror copy behaviour)
     try:
-        if _is_output_nonempty(output_path):
+        if is_nonempty(output_path):
             logger.info(
                 "Output directory %s is not empty; applying overwrite policy",
                 output_path,
             )
-            if not _should_overwrite(output_path, overwrite):
+            if not should_overwrite(output_path, overwrite):
                 logger.error(
                     "Restore aborted: destination not overwritten as per policy"
                 )
                 raise RestoreError("Destination not overwritten per policy")
             # clear contents
             try:
-                _clear_directory_contents(output_path)
+                clear_directory_contents(output_path)
             except Exception as e:
                 logger.error("Failed to clear destination %s: %s", output_path, e)
-                raise RestoreError("Failed to prepare destination for restore")
+                raise RestoreError("Failed to prepare destination for restore") from e
     except Exception as e:
         logger.error("Error while preparing destination: %s", e)
-        raise RestoreError("Destination preparation failed")
+        raise RestoreError("Destination preparation failed") from e
 
     # Decrypt if necessary
-    temp_decrypted: Optional[str] = None
+    temp_decrypted: str | None = None
     try:
         if encrypted:
             try:

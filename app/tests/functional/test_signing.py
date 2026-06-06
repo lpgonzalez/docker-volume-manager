@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -37,8 +36,10 @@ def gpg_keypair(tmp_path, monkeypatch):
         [
             "gpg",
             "--batch",
-            "--passphrase", "",
-            "--pinentry-mode", "loopback",
+            "--passphrase",
+            "",
+            "--pinentry-mode",
+            "loopback",
             "--quick-gen-key",
             "DVM Test <test@example.com>",
             "ed25519",
@@ -51,7 +52,9 @@ def gpg_keypair(tmp_path, monkeypatch):
 
     result = subprocess.run(
         ["gpg", "--list-keys", "--with-colons"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     fingerprint = None
     for line in result.stdout.splitlines():
@@ -74,7 +77,7 @@ def populated_input(tmp_path):
 
 def test_sign_archive_produces_verifiable_signature(populated_input, gpg_keypair):
     input_dir, output_dir = populated_input
-    homedir, fingerprint = gpg_keypair
+    _homedir, fingerprint = gpg_keypair
 
     manager = BackupManager(
         vol_name="signed",

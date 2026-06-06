@@ -1,11 +1,7 @@
 """
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
-"""
 
-from __future__ import annotations
-
-"""
 Rename a Docker volume.
 
 Docker has no native `docker volume rename`. This module implements it as:
@@ -20,9 +16,10 @@ Rollback: if any step after target creation fails, the target volume is
 removed so the source remains authoritative.
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 from docker_client import DockerClient, DockerUnavailable, format_size
 
@@ -48,7 +45,7 @@ def rename_volume(
     *,
     keep_source: bool = False,
     force: bool = False,
-    client: Optional[DockerClient] = None,
+    client: DockerClient | None = None,
 ) -> RenameResult:
     """Rename a Docker volume. See module docstring for the algorithm."""
 
@@ -86,9 +83,7 @@ def rename_volume(
     try:
         client.create_volume(target)
     except DockerUnavailable as exc:
-        raise RenameError(
-            f"Failed to create target volume {target!r}: {exc}"
-        ) from exc
+        raise RenameError(f"Failed to create target volume {target!r}: {exc}") from exc
 
     try:
         logger.info("Copying data %s -> %s (via helper container)", source, target)
@@ -149,7 +144,7 @@ def rename_volume(
     )
 
 
-def _volume_stats(client: DockerClient, name: str) -> Dict[str, int]:
+def _volume_stats(client: DockerClient, name: str) -> dict[str, int]:
     """Return {'files': N, 'bytes': M} for a volume. Raises RenameError on failure."""
     try:
         output = client.run_throwaway(
@@ -163,9 +158,7 @@ def _volume_stats(client: DockerClient, name: str) -> Dict[str, int]:
             volumes={name: {"bind": "/target", "mode": "ro"}},
         )
     except DockerUnavailable as exc:
-        raise RenameError(
-            f"Cannot read volume stats for {name!r}: {exc}"
-        ) from exc
+        raise RenameError(f"Cannot read volume stats for {name!r}: {exc}") from exc
 
     lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
     if len(lines) < 2:

@@ -14,7 +14,6 @@ import pytest
 
 import cli
 
-
 pytestmark = pytest.mark.slow
 
 _POPULATE_SCRIPT = (
@@ -52,27 +51,34 @@ def test_backup_restore_volume_roundtrip(
         cli.app,
         [
             "backup",
-            "--input-volume", source,
-            "--output-volume", store,
-            "-n", "my-backup",
-            "-c", compression,
+            "--input-volume",
+            source,
+            "--output-volume",
+            store,
+            "-n",
+            "my-backup",
+            "-c",
+            compression,
         ],
     )
-    assert backup_result.exit_code == 0, (
-        (backup_result.stderr or "") + (backup_result.stdout or "")
+    assert backup_result.exit_code == 0, (backup_result.stderr or "") + (
+        backup_result.stdout or ""
     )
 
     restore_result = cli_runner.invoke(
         cli.app,
         [
             "restore",
-            "--input-volume", store,
-            "--output-volume", restored,
-            "-n", "my-backup",
+            "--input-volume",
+            store,
+            "--output-volume",
+            restored,
+            "-n",
+            "my-backup",
         ],
     )
-    assert restore_result.exit_code == 0, (
-        (restore_result.stderr or "") + (restore_result.stdout or "")
+    assert restore_result.exit_code == 0, (restore_result.stderr or "") + (
+        restore_result.stdout or ""
     )
 
     _assert_file(docker_client, restored, "a.txt", "alpha")
@@ -101,11 +107,16 @@ def test_backup_restore_with_encryption(
         cli.app,
         [
             "backup",
-            "--input-volume", source,
-            "--output-volume", store,
-            "-n", "encrypted-bak",
-            "-c", "ZSTD",
-            "-k", passphrase,
+            "--input-volume",
+            source,
+            "--output-volume",
+            store,
+            "-n",
+            "encrypted-bak",
+            "-c",
+            "ZSTD",
+            "-k",
+            passphrase,
         ],
     )
     assert backup_result.exit_code == 0
@@ -114,10 +125,14 @@ def test_backup_restore_with_encryption(
         cli.app,
         [
             "restore",
-            "--input-volume", store,
-            "--output-volume", restored,
-            "-n", "encrypted-bak",
-            "-k", passphrase,
+            "--input-volume",
+            store,
+            "--output-volume",
+            restored,
+            "-n",
+            "encrypted-bak",
+            "-k",
+            passphrase,
         ],
     )
     assert restore_result.exit_code == 0
@@ -139,12 +154,18 @@ def test_backup_with_encryption_and_parity(
         cli.app,
         [
             "backup",
-            "--input-volume", source,
-            "--output-volume", store,
-            "-n", "with-parity",
-            "-c", "ZSTD",
-            "-p", "30",
-            "-k", passphrase,
+            "--input-volume",
+            source,
+            "--output-volume",
+            store,
+            "-n",
+            "with-parity",
+            "-c",
+            "ZSTD",
+            "-p",
+            "30",
+            "-k",
+            passphrase,
         ],
     )
     assert backup_result.exit_code == 0
@@ -156,9 +177,7 @@ def test_backup_with_encryption_and_parity(
         volumes={store: {"bind": "/target", "mode": "ro"}},
     )
     par2_files = [
-        os.path.basename(ln.strip())
-        for ln in listing.splitlines()
-        if ln.strip()
+        os.path.basename(ln.strip()) for ln in listing.splitlines() if ln.strip()
     ]
     assert len(par2_files) == 2, f"expected 2 par2 files, got: {par2_files!r}"
     assert any(f.endswith(".gpg.par2") for f in par2_files)

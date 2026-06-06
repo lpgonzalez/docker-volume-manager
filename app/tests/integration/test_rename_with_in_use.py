@@ -13,7 +13,6 @@ import pytest
 
 from operations.rename_volume import RenameError, rename_volume
 
-
 pytestmark = pytest.mark.slow
 
 
@@ -85,9 +84,7 @@ def test_rename_in_use_with_force_completes_copy_but_leaves_source(
 
     target = f"dvm-test-renamed-force-{uuid.uuid4().hex[:8]}"
     try:
-        result = rename_volume(
-            source, target, force=True, client=docker_client
-        )
+        result = rename_volume(source, target, force=True, client=docker_client)
         assert result.target == target
         # User container still holds source → Docker refused deletion.
         assert result.source_deleted is False

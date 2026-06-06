@@ -1,11 +1,7 @@
 """
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
-"""
 
-from __future__ import annotations
-
-"""
 Progress reporting that adapts to TTY / non-TTY contexts.
 
 TTY + rich available:
@@ -20,10 +16,12 @@ Non-TTY (docker run -d, CI, redirection, file logs):
 Rich output goes to stderr exclusively so stdout remains usable for piping.
 """
 
+from __future__ import annotations
+
 import logging
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator, Optional
 
 logger = logging.getLogger("dvm")
 
@@ -78,7 +76,7 @@ class ProgressReporter:
         self._task_id = None
         self._log_step = max(1, self.total // 10) if self.total else 1
 
-    def __enter__(self) -> "ProgressReporter":
+    def __enter__(self) -> ProgressReporter:
         if not self.enabled or not self._tty:
             return self
         self._progress = _try_build_progress()
@@ -86,9 +84,7 @@ class ProgressReporter:
             return self
         try:
             self._progress.start()
-            self._task_id = self._progress.add_task(
-                self.description, total=self.total
-            )
+            self._task_id = self._progress.add_task(self.description, total=self.total)
         except Exception:
             self._progress = None
             self._task_id = None
@@ -118,10 +114,7 @@ class ProgressReporter:
         # 100% — further over-advances shouldn't spam the file/JSON handlers.
         if previous >= self.total:
             return
-        if (
-            self._processed % self._log_step == 0
-            or self._processed >= self.total
-        ):
+        if self._processed % self._log_step == 0 or self._processed >= self.total:
             pct = int(self._processed * 100 / self.total) if self.total else 100
             logger.info(
                 "%s progress: %d/%d (%d%%)",

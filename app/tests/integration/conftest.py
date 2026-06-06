@@ -12,7 +12,9 @@ def pytest_collection_modifyitems(config, items):
     """Auto-skip integration tests when no docker.sock is mounted."""
     if os.path.exists("/var/run/docker.sock"):
         return
-    skip = pytest.mark.skip(reason="Docker socket not available; mount /var/run/docker.sock to run")
+    skip = pytest.mark.skip(
+        reason="Docker socket not available; mount /var/run/docker.sock to run"
+    )
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip)
@@ -76,9 +78,11 @@ def volume_factory(docker_client):
 @pytest.fixture
 def populate_volume(docker_client):
     """Callable fixture: run a shell script with a volume bind-mounted at /target."""
+
     def _populate(volume_name: str, script: str) -> None:
         docker_client.run_throwaway(
             ["sh", "-c", script],
             volumes={volume_name: {"bind": "/target", "mode": "rw"}},
         )
+
     return _populate

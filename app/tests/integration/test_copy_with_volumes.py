@@ -11,7 +11,6 @@ import pytest
 
 import cli
 
-
 pytestmark = pytest.mark.slow
 
 
@@ -69,9 +68,7 @@ def test_copy_refuses_without_existing_target_volume(
     assert result.exit_code == cli.EXIT_VALIDATION
 
 
-def test_copy_refuses_missing_input_volume(
-    docker_client, volume_factory, cli_runner
-):
+def test_copy_refuses_missing_input_volume(docker_client, volume_factory, cli_runner):
     dst = volume_factory()
     result = cli_runner.invoke(
         cli.app,

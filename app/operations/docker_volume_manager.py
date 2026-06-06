@@ -1,16 +1,15 @@
 """
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
-"""
 
-"""
 Docker_Volume_Manager: orchestrates operations BACKUP, RESTORE, VERIFY, COPY
 """
+
 import logging
 import os
-from typing import Optional
 
 from config import Config
+from operations import codecs
 from operations.backup_files import BackupManager
 from operations.copy_files import CopyManager
 from operations.restore_files import RestoreError
@@ -21,7 +20,7 @@ logger = logging.getLogger("dvm")
 
 
 def _operation_extras(
-    password: Optional[str], gpg_recipients: Optional[list], create_parity: bool
+    password: str | None, gpg_recipients: list | None, create_parity: bool
 ) -> str:
     extras = []
     if password or (gpg_recipients and len(gpg_recipients) > 0):
@@ -70,11 +69,11 @@ class Docker_Volume_Manager:
             return False
 
     def map_compression(self, level: str) -> str:
-        # Backup-side mapping is intentionally limited to the modern set:
+        # Both backup and restore are limited to the modern set:
         # NONE (raw tar), GZ (universal interop), ZSTD (default best-in-class).
-        # Restore continues to handle legacy `.tar.bz2` / `.tar.xz` archives.
-        mapping = {"NONE": "none", "GZ": "gz", "ZSTD": "zstd"}
-        mapped = mapping.get(level.upper(), "zstd")
+        # Legacy .tar.bz2 / .tar.xz are no longer produced nor restored.
+        # The codec registry is the single source of truth for the mapping.
+        mapped = codecs.normalize_name(level)
         self.logger.debug("Mapped compression level %s -> %s", level, mapped)
         return mapped
 

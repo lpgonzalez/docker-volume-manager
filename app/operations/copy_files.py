@@ -1,35 +1,33 @@
 """
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
+
+Copy manager: copy all files from input_path into output_path.
+
+Behaviour:
+- Validate input is readable and contains files, and output is writable.
+- If output contains files, apply the shared overwrite policy
+  (see operations.fs_overwrite): overwrite unconditionally when the flag is set,
+  prompt on a TTY, default to overwrite when non-interactive.
+- Delete the *contents* of the output directory (the directory itself is kept)
+  and copy input contents directly into output (no extra subdirs).
+- Preserve permissions/timestamps with copy2/copystat, owner/group via chown
+  (as root), and best-effort extended attributes when supported.
+- Progress logged at a modest frequency (~5% increments).
 """
 
 import logging
 import os
 import shutil
 
-from operations.auxiliary_methods import get_formatted_time
+from operations.fs_overwrite import (
+    clear_directory_contents,
+    is_nonempty,
+    should_overwrite,
+)
 from progress import ProgressReporter
 
 logger = logging.getLogger("dvm")
-
-"""
-Copy manager: copy all files from input_path into output_path.
-Behaviour:
-- Validate input is readable and contains files.
-- Validate output is writable.
-- If output contains files, inform the user and support an overwrite flow:
-  * Default overwrite policy is 'Y' (yes) unless env COPY_OVERWRITE is set to another value.
-  * If COPY_OVERWRITE is explicitly set to a non-yes value, and stdin is a TTY, ask for confirmation.
-  * Non-interactive environments default to overwrite but log that fact.
-- After confirming/deciding, delete *contents* of output directory (preserve directory itself)
-  and copy input contents directly into output (no extra subdirs).
-- Preserve permissions/timestamps with copy2/copystat, attempt to preserve owner/group (chown),
-  and best-effort copy of extended attributes when supported.
-- Progress logged at a modest frequency (~5% increments).
-"""
-
-
-YES_VALUES = {"y", "yes", "Y", "YES"}
 
 
 def _copy_xattrs(src: str, dst: str) -> None:
@@ -140,56 +138,6 @@ class CopyManager:
 
         logger.debug("Output directory is writable: %s", self.output_path)
 
-    def _prompt_overwrite(self) -> bool:
-        """Decide overwrite behaviour based on self.overwrite and interactivity."""
-        if self.overwrite:
-            logger.info(
-                "Overwrite policy: overwrite=True, proceeding without prompt."
-            )
-            return True
-
-        if os.isatty(0):
-            try:
-                logger.info(
-                    "Destination %s contains files. overwrite=False — asking user for confirmation.",
-                    self.output_path,
-                )
-                resp = input(
-                    f"Destination '{self.output_path}' is not empty. Overwrite? [Y/n]: "
-                )
-                if resp.strip() in YES_VALUES or resp.strip() == "":
-                    logger.info("User confirmed overwrite.")
-                    return True
-                logger.info("User denied overwrite.")
-                return False
-            except Exception:
-                logger.warning(
-                    "Interactive confirmation failed; defaulting to overwrite"
-                )
-                return True
-
-        logger.info(
-            "Non-interactive environment with overwrite=False: defaulting to overwrite. "
-            "Pass --overwrite to suppress this fallback, or run with -it for confirmation."
-        )
-        return True
-
-    def _clear_directory_contents(self, path: str) -> None:
-        logger.info("Clearing contents of destination: %s", path)
-        for entry in os.listdir(path):
-            full = os.path.join(path, entry)
-            try:
-                if os.path.isdir(full) and not os.path.islink(full):
-                    shutil.rmtree(full)
-                else:
-                    # file or symlink
-                    os.remove(full)
-            except Exception as e:
-                logger.exception(
-                    "Failed to remove %s while clearing destination: %s", full, e
-                )
-                raise
-
     def _set_owner(self, src: str, dst: str, follow_symlinks: bool = True) -> None:
         """Try to set owner/group on dst to match src (best-effort)."""
         try:
@@ -217,7 +165,6 @@ class CopyManager:
         Perform the copy operation.
         Returns the destination path (same as self.output_path).
         """
-        op_start_ts = get_formatted_time("%Y-%m-%d %H:%M:%S")
         logger.info("Starting operation: COPY")
         logger.info("Starting copy: %s -> %s", self.input_path, self.output_path)
 
@@ -226,18 +173,16 @@ class CopyManager:
         self._ensure_output_writable()
 
         # if destination contains files, prepare overwrite flow
-        dest_has_content = bool(os.listdir(self.output_path))
-        if dest_has_content:
+        if is_nonempty(self.output_path):
             logger.info("Destination directory %s is not empty.", self.output_path)
-            do_overwrite = self._prompt_overwrite()
-            if not do_overwrite:
+            if not should_overwrite(self.output_path, self.overwrite):
                 logger.error("Copy aborted by user - destination not overwritten.")
                 logger.info("-" * 50)
                 raise PermissionError(
                     "Copy aborted by user, destination not overwritten."
                 )
             # proceed to clear destination contents
-            self._clear_directory_contents(self.output_path)
+            clear_directory_contents(self.output_path)
         else:
             logger.debug(
                 "Destination directory %s is empty; proceeding.", self.output_path

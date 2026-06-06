@@ -1,11 +1,7 @@
 """
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
-"""
 
-from __future__ import annotations
-
-"""
 Typed, validated configuration object for Docker Volume Manager.
 
 Two construction paths:
@@ -18,11 +14,12 @@ logger via `logging.getLogger(LOGGER_NAME)` without importing this module — th
 Python logging system keeps logger instances singleton by name.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 from dotenv import load_dotenv
 
@@ -55,7 +52,7 @@ def _parse_bool(value, default: bool = True) -> bool:
 class JsonFormatter(logging.Formatter):
     """Minimal JSON formatter — no external dependency on python-json-logger quirks."""
 
-    def __init__(self, datefmt: Optional[str] = None):
+    def __init__(self, datefmt: str | None = None):
         super().__init__(datefmt=datefmt)
 
     def format(self, record: logging.LogRecord) -> str:
@@ -139,14 +136,14 @@ class Config:
     COMPRESSION: str = "ZSTD"
     PARITY: int = 0
     ENCRYPTION_KEY: str = ""
-    GPG_RECIPIENTS: List[str] = field(default_factory=list)
+    GPG_RECIPIENTS: list[str] = field(default_factory=list)
     SIGN_KEY: str = ""
     SIGN_KEY_PASSPHRASE: str = ""
-    TIMESTAMP: Optional[str] = None
+    TIMESTAMP: str | None = None
     COPY_OVERWRITE: bool = True
     LOG_LEVEL: str = "INFO"
-    LOG_OUTPUT: List[str] = field(default_factory=lambda: ["console"])
-    LOGS_PATH: Optional[str] = "/app/logs"
+    LOG_OUTPUT: list[str] = field(default_factory=lambda: ["console"])
+    LOGS_PATH: str | None = "/app/logs"
     USE_COLORS: bool = True
 
     def __post_init__(self) -> None:
@@ -177,7 +174,7 @@ class Config:
                 f"LOG_LEVEL must be one of {sorted(VALID_LOG_LEVELS)} (got {self.LOG_LEVEL!r})"
             )
 
-        normalised: List[str] = []
+        normalised: list[str] = []
         for raw in self.LOG_OUTPUT or []:
             s = str(raw).strip()
             if s in VALID_LOG_OUTPUTS and s not in normalised:
@@ -216,7 +213,7 @@ class Config:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_env(cls, **overrides) -> "Config":
+    def from_env(cls, **overrides) -> Config:
         """Build from environment variables. Any explicit kwarg wins over env."""
 
         def pick(name: str, default):

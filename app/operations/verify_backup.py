@@ -9,9 +9,10 @@ import logging
 import os
 import subprocess
 import tarfile
-from typing import List
 
 import gnupg
+
+from operations import codecs
 
 try:
     # PEP 784 — Python 3.14+ standard library zstd support.
@@ -63,7 +64,7 @@ class BackupVerifier:
 
         # Find all .par2 files related to the backup and mark whether parity files exist.
         try:
-            self.par2_files: List[str] = self._find_par2_files()
+            self.par2_files: list[str] = self._find_par2_files()
             self.verify_parity = len(self.par2_files) > 0
             logger.debug("Found par2 files: %s", self.par2_files)
         except Exception:
@@ -106,6 +107,17 @@ class BackupVerifier:
     def can_decompress(self) -> bool:
         path = self.backup_path
         data = None
+        # Per-codec decompression testers, keyed by logical name.
+        mem_tests = {
+            "gz": self._test_gzip,
+            "zstd": self._test_zstd,
+            "none": self._test_tar,
+        }
+        file_tests = {
+            "gz": self._test_gzip_file,
+            "zstd": self._test_zstd_file,
+            "none": self._test_tar_file,
+        }
         try:
             if path.endswith(".gpg"):
                 if not self.gpg:
@@ -128,12 +140,9 @@ class BackupVerifier:
                     "Decryption produced %d bytes", len(data) if data is not None else 0
                 )
 
-                if path.endswith(".tar.gz.gpg") or path.endswith(".tgz.gpg"):
-                    return self._test_gzip(data)
-                if path.endswith(".tar.zst.gpg") or path.endswith(".tzst.gpg"):
-                    return self._test_zstd(data)
-                if path.endswith(".tar.gpg"):
-                    return self._test_tar(data)
+                codec = codecs.codec_for_path(path)
+                if codec:
+                    return mem_tests[codec.name](data)
 
                 # Fallback: attempt to detect compression format automatically.
                 logger.debug(
@@ -146,12 +155,9 @@ class BackupVerifier:
                     or self._test_tar(data)
                 )
             else:
-                if path.endswith(".tar.gz") or path.endswith(".tgz"):
-                    return self._test_gzip_file(path)
-                if path.endswith(".tar.zst") or path.endswith(".tzst"):
-                    return self._test_zstd_file(path)
-                if path.endswith(".tar"):
-                    return self._test_tar_file(path)
+                codec = codecs.codec_for_path(path)
+                if codec:
+                    return file_tests[codec.name](path)
 
                 # Fallback: try all supported archive formats.
                 logger.debug(
@@ -168,9 +174,11 @@ class BackupVerifier:
 
     def _test_gzip(self, data: bytes) -> bool:
         try:
-            with gzip.GzipFile(fileobj=io.BytesIO(data)) as gz:
-                with tarfile.open(fileobj=gz) as tar:
-                    tar.getmembers()
+            with (
+                gzip.GzipFile(fileobj=io.BytesIO(data)) as gz,
+                tarfile.open(fileobj=gz) as tar,
+            ):
+                tar.getmembers()
             logger.debug("_test_gzip: success")
             return True
         except Exception:
@@ -192,9 +200,11 @@ class BackupVerifier:
             logger.debug("_test_zstd: compression.zstd unavailable")
             return False
         try:
-            with _zstd.ZstdFile(io.BytesIO(data), mode="rb") as zst:
-                with tarfile.open(fileobj=zst) as tar:
-                    tar.getmembers()
+            with (
+                _zstd.ZstdFile(io.BytesIO(data), mode="rb") as zst,
+                tarfile.open(fileobj=zst) as tar,
+            ):
+                tar.getmembers()
             logger.debug("_test_zstd: success")
             return True
         except Exception:
@@ -203,9 +213,11 @@ class BackupVerifier:
 
     def _test_gzip_file(self, path: str) -> bool:
         try:
-            with gzip.open(path, "rb") as gz:
-                with tarfile.open(fileobj=gz) as tar:
-                    tar.getmembers()
+            with (
+                gzip.open(path, "rb") as gz,
+                tarfile.open(fileobj=gz) as tar,
+            ):
+                tar.getmembers()
             logger.debug("_test_gzip_file(%s): success", path)
             return True
         except Exception:
@@ -217,9 +229,11 @@ class BackupVerifier:
             logger.debug("_test_zstd_file(%s): compression.zstd unavailable", path)
             return False
         try:
-            with _zstd.ZstdFile(path, mode="rb") as zst:
-                with tarfile.open(fileobj=zst) as tar:
-                    tar.getmembers()
+            with (
+                _zstd.ZstdFile(path, mode="rb") as zst,
+                tarfile.open(fileobj=zst) as tar,
+            ):
+                tar.getmembers()
             logger.debug("_test_zstd_file(%s): success", path)
             return True
         except Exception:
@@ -249,7 +263,7 @@ class BackupVerifier:
         import glob
 
         base = self.backup_path
-        candidates: List[str] = []
+        candidates: list[str] = []
         # Base variants: include both the path as-is and without a trailing .gpg suffix.
         bases = [base]
         if base.endswith(".gpg"):
@@ -287,8 +301,7 @@ class BackupVerifier:
         try:
             result = subprocess.run(
                 ["par2", "verify", main],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 check=False,
             )
             logger.debug(
@@ -312,8 +325,7 @@ class BackupVerifier:
         try:
             result = subprocess.run(
                 ["par2", "repair", main],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 check=False,
             )
             logger.debug(

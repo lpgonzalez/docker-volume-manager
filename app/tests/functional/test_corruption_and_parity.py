@@ -9,7 +9,6 @@ recovery kicks in when parity files are present).
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -74,7 +73,9 @@ def test_verify_repairs_corruption_with_parity(populated_input):
     assert report["parity_files_exist"] is True
     # Parity reported invalid pre-repair, but recovery must have succeeded.
     # After recovery par2 restores the archive, so decompression works again.
-    assert report.get("parity_recovered", False) is True or report["parity_valid"] is True
+    assert (
+        report.get("parity_recovered", False) is True or report["parity_valid"] is True
+    )
     assert report["can_decompress"] is True
 
 

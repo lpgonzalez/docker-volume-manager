@@ -11,7 +11,6 @@ import pytest
 from operations.backup_files import BackupManager
 from operations.restore_files import restore
 
-
 # (compression, password, parity_percentage) — parity=0 means no parity.
 # Primary matrix — only the supported (post-cleanup) algorithms.
 # Legacy bz2/xz round-trips live in test_legacy_decompression.py to keep
@@ -73,6 +72,7 @@ def test_backup_then_restore_is_bit_equivalent(
     # Compare every entry. When running as root (inside the test image) tar
     # preserves UIDs/GIDs; outside root they collapse to the extracting user.
     import os
+
     compare_ownership = os.geteuid() == 0
     for rel in before:
         b_type, b_size, b_mode, b_uid, b_gid, b_content = before[rel]

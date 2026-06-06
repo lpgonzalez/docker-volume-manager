@@ -1,11 +1,7 @@
 """
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
-"""
 
-from __future__ import annotations
-
-"""
 Docker Engine API facade for Docker Volume Manager.
 
 Thin wrapper over docker-py covering the subset of operations DVM needs:
@@ -15,8 +11,8 @@ Thin wrapper over docker-py covering the subset of operations DVM needs:
 - Volume introspection (containers mounting it, on-disk size, top-level
   listing) — size/contents require spawning a short-lived helper container
   that mounts the volume read-only.
-- Generic `run_throwaway` primitive used by step 3b's input/output volume
-  pivot flow and by the introspection helpers here.
+- Generic `run_throwaway` primitive used by the input/output volume pivot flow
+  and by the introspection helpers here.
 
 All failures surface as `DockerUnavailable` carrying an actionable message —
 the CLI prints that instead of a raw SDK traceback.
@@ -26,10 +22,13 @@ root on the host. Appropriate for local / trusted environments; audit before
 exposing to untrusted input.
 """
 
+from __future__ import annotations
+
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
 
 logger = logging.getLogger("dvm")
 
@@ -47,19 +46,19 @@ class VolumeInfo:
     name: str
     driver: str = "unknown"
     mountpoint: str = ""
-    labels: Dict[str, str] = field(default_factory=dict)
-    options: Dict[str, str] = field(default_factory=dict)
+    labels: dict[str, str] = field(default_factory=dict)
+    options: dict[str, str] = field(default_factory=dict)
     scope: str = "local"
-    created_at: Optional[str] = None
-    containers: List[str] = field(default_factory=list)
-    size_bytes: Optional[int] = None
-    top_entries: Optional[List[str]] = None
+    created_at: str | None = None
+    containers: list[str] = field(default_factory=list)
+    size_bytes: int | None = None
+    top_entries: list[str] | None = None
 
 
 def _require_docker():
     try:
-        import docker  # noqa: WPS433
-        from docker import errors as _errors  # noqa: WPS433, F401
+        import docker
+        from docker import errors as _errors  # noqa: F401
     except Exception as exc:
         raise DockerUnavailable(
             "`docker` Python SDK not installed in this image. Rebuild with the updated requirements."
@@ -120,7 +119,7 @@ class DockerClient:
     # Volume lifecycle
     # ------------------------------------------------------------------
 
-    def list_volumes(self) -> List[VolumeInfo]:
+    def list_volumes(self) -> list[VolumeInfo]:
         """
         Return all Docker volumes sorted alphabetically (case-insensitive).
 
@@ -154,12 +153,15 @@ class DockerClient:
     ) -> VolumeInfo:
         client = self._connect()
         from docker.errors import NotFound
+
         try:
             vol = client.volumes.get(name)
         except NotFound as exc:
             raise DockerUnavailable(f"Volume {name!r} does not exist") from exc
         except Exception as exc:
-            raise DockerUnavailable(f"Failed to inspect volume {name!r}: {exc}") from exc
+            raise DockerUnavailable(
+                f"Failed to inspect volume {name!r}: {exc}"
+            ) from exc
         info = self._info_from(vol)
         info.containers = self._containers_by_volume().get(info.name, [])
         if with_size:
@@ -179,6 +181,7 @@ class DockerClient:
     def remove_volume(self, name: str, force: bool = False) -> None:
         client = self._connect()
         from docker.errors import NotFound
+
         try:
             vol = client.volumes.get(name)
             vol.remove(force=force)
@@ -190,6 +193,7 @@ class DockerClient:
     def volume_exists(self, name: str) -> bool:
         client = self._connect()
         from docker.errors import NotFound
+
         try:
             client.volumes.get(name)
             return True
@@ -202,7 +206,7 @@ class DockerClient:
     # Volume introspection via throwaway helpers
     # ------------------------------------------------------------------
 
-    def volume_size(self, name: str) -> Optional[int]:
+    def volume_size(self, name: str) -> int | None:
         """Total on-disk size in bytes; None if probe fails."""
         try:
             out = self.run_throwaway(
@@ -217,7 +221,7 @@ class DockerClient:
             logger.debug("Size probe failed for %s: %s", name, exc)
             return None
 
-    def volume_ls(self, name: str, max_entries: int = 50) -> Optional[List[str]]:
+    def volume_ls(self, name: str, max_entries: int = 50) -> list[str] | None:
         """List top-level entries of the volume (one per line, trailing / marks dirs)."""
         try:
             cmd = f"ls -1Ap /target 2>/dev/null | head -n {int(max_entries)}"
@@ -251,11 +255,28 @@ class DockerClient:
                 tags = ctr.image.tags or []
                 if tags:
                     return tags[0]
-            except Exception:
-                pass
+            except Exception as exc:
+                # HOSTNAME isn't always the container id (--network host,
+                # --hostname, Podman, k8s). Surface why we're falling back so a
+                # version-skewed helper image isn't spawned silently.
+                logger.warning(
+                    "Could not resolve own image from container id %s (%s); "
+                    "falling back to %s. Set %s to override.",
+                    cid,
+                    exc,
+                    FALLBACK_IMAGE,
+                    SELF_IMAGE_ENV,
+                )
+        else:
+            logger.warning(
+                "Could not determine own container id; falling back to image %s. "
+                "Set %s to override.",
+                FALLBACK_IMAGE,
+                SELF_IMAGE_ENV,
+            )
         return FALLBACK_IMAGE
 
-    def self_mounts(self) -> List[Dict[str, Any]]:
+    def self_mounts(self) -> list[dict[str, Any]]:
         """Return the outer container's `Mounts` list (for bind-mount inheritance)."""
         cid = self._self_container_id()
         if not cid:
@@ -270,9 +291,9 @@ class DockerClient:
     def run_helper_streaming(
         self,
         *,
-        command: List[str],
-        volume_mounts: Dict[str, Dict[str, str]],
-        env: Optional[Dict[str, str]] = None,
+        command: list[str],
+        volume_mounts: dict[str, dict[str, str]],
+        env: dict[str, str] | None = None,
         inherit_bind_mounts: bool = True,
         tty: bool = False,
     ) -> int:
@@ -319,7 +340,7 @@ class DockerClient:
         from docker.errors import ImageNotFound
 
         overridden_targets = {v["bind"] for v in volume_mounts.values()}
-        mounts: Dict[str, Dict[str, str]] = dict(volume_mounts)
+        mounts: dict[str, dict[str, str]] = dict(volume_mounts)
         if inherit_bind_mounts:
             for m in self.self_mounts():
                 if m.get("Type") != "bind":
@@ -335,7 +356,7 @@ class DockerClient:
                     "mode": "rw" if m.get("RW", True) else "ro",
                 }
 
-        container_env: Dict[str, str] = {
+        container_env: dict[str, str] = {
             "DVM_HELPER_MODE": "1",
             "PYTHONUNBUFFERED": "1",
         }
@@ -365,7 +386,9 @@ class DockerClient:
             raise DockerUnavailable(f"Helper container failed to start: {exc}") from exc
 
         try:
-            for raw in container.logs(stream=True, follow=True, stdout=True, stderr=True):
+            for raw in container.logs(
+                stream=True, follow=True, stdout=True, stderr=True
+            ):
                 if isinstance(raw, (bytes, bytearray)):
                     line = raw.decode("utf-8", errors="replace")
                 else:
@@ -384,13 +407,14 @@ class DockerClient:
         self,
         command: Iterable[str],
         *,
-        volumes: Dict[str, Dict[str, str]],
-        image: Optional[str] = None,
+        volumes: dict[str, dict[str, str]],
+        image: str | None = None,
     ) -> str:
         """Run a one-shot container, capture stdout, auto-remove. Override ENTRYPOINT so we can run arbitrary shell commands against the DVM image."""
         client = self._connect()
         image = image or self.self_image()
         from docker.errors import ContainerError, ImageNotFound
+
         try:
             output = client.containers.run(
                 image=image,
@@ -433,9 +457,9 @@ class DockerClient:
             created_at=attrs.get("CreatedAt"),
         )
 
-    def _containers_by_volume(self) -> Dict[str, List[str]]:
+    def _containers_by_volume(self) -> dict[str, list[str]]:
         client = self._connect()
-        mapping: Dict[str, List[str]] = {}
+        mapping: dict[str, list[str]] = {}
         try:
             containers = client.containers.list(all=True)
         except Exception as exc:
@@ -449,7 +473,7 @@ class DockerClient:
                         mapping.setdefault(vol_name, []).append(ctr.name)
         return mapping
 
-    def _self_container_id(self) -> Optional[str]:
+    def _self_container_id(self) -> str | None:
         env_hostname = os.environ.get("HOSTNAME")
         if env_hostname:
             return env_hostname
@@ -460,7 +484,7 @@ class DockerClient:
             return None
 
 
-def format_size(n: Optional[int]) -> str:
+def format_size(n: int | None) -> str:
     """Human-readable byte size. Accepts None for unknown."""
     if n is None:
         return "n/a"

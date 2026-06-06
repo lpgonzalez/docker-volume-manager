@@ -6,17 +6,20 @@ import pytest
 
 import cli
 
-
 pytestmark = pytest.mark.slow
 
 
 def _make_backup(cli_runner, source: str, store: str, name: str, **extra_args):
     args = [
         "backup",
-        "--input-volume", source,
-        "--output-volume", store,
-        "-n", name,
-        "-c", "GZ",
+        "--input-volume",
+        source,
+        "--output-volume",
+        store,
+        "-n",
+        name,
+        "-c",
+        "GZ",
     ]
     for flag, value in extra_args.items():
         args.extend([flag, str(value)])
@@ -49,17 +52,23 @@ def test_verify_encrypted_backup_in_volume(
     store = volume_factory()
     populate_volume(source, "echo secret > /target/data.txt")
 
-    assert _make_backup(
-        cli_runner, source, store, "encrypted-verify", **{"-k": "pw"}
-    ).exit_code == 0
+    assert (
+        _make_backup(
+            cli_runner, source, store, "encrypted-verify", **{"-k": "pw"}
+        ).exit_code
+        == 0
+    )
 
     result = cli_runner.invoke(
         cli.app,
         [
             "verify",
-            "--output-volume", store,
-            "-n", "encrypted-verify",
-            "-k", "pw",
+            "--output-volume",
+            store,
+            "-n",
+            "encrypted-verify",
+            "-k",
+            "pw",
         ],
     )
     assert result.exit_code == 0

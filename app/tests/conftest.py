@@ -12,10 +12,8 @@ import os
 import random
 import stat
 from pathlib import Path
-from typing import Dict, Tuple
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Auto-marker
@@ -132,7 +130,7 @@ def data_tree(tmp_path, request) -> Path:
         if uid is not None and gid is not None:
             try:
                 os.chown(path, uid, gid)
-            except (PermissionError, OSError):
+            except PermissionError, OSError:
                 pass
 
     def mk_dir(path: Path, mode: int = 0o755) -> None:
@@ -175,7 +173,7 @@ def data_tree(tmp_path, request) -> Path:
 
 def _tree_fingerprint(
     root: Path, *, include_ownership: bool = True
-) -> Dict[str, Tuple]:
+) -> dict[str, tuple]:
     """
     Walk a directory tree and return a structural fingerprint.
 
@@ -183,7 +181,7 @@ def _tree_fingerprint(
     where `hash_or_target` is sha256 for regular files, the link target for
     symlinks, and None for directories.
     """
-    out: Dict[str, Tuple] = {}
+    out: dict[str, tuple] = {}
     root = Path(root)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dp = Path(dirpath)
