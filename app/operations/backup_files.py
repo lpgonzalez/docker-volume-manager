@@ -70,7 +70,8 @@ class BackupManager:
 
     - :py:meth:`compress`: pure-Python ``tarfile`` (PAX format). Used when no
       encryption is requested. Preserves uid/gid/uname/gname/mtime/mode and
-      attempts xattrs. Single-threaded.
+      extended attributes (best-effort, via SCHILY.xattr PAX records).
+      Single-threaded.
     - :py:meth:`compress_and_encrypt_pipeline`: shell pipeline
       ``tar | <compressor> | gpg``. Used when encryption is requested.
       Multi-threaded compressor (pigz / zstd ``-T0``) and AES-NI-accelerated
@@ -269,6 +270,21 @@ class BackupManager:
                     pax["uname"] = tarinfo.uname
                 if tarinfo.gname:
                     pax["gname"] = tarinfo.gname
+                # Capture extended attributes (incl. POSIX ACLs / SELinux labels)
+                # as SCHILY.xattr.* PAX records so a GNU-tar restore (--xattrs)
+                # re-applies them. Best-effort: binary values round-trip via
+                # surrogateescape.
+                try:
+                    for attr in os.listxattr(path, follow_symlinks=False):
+                        try:
+                            raw = os.getxattr(path, attr, follow_symlinks=False)
+                            pax[f"SCHILY.xattr.{attr}"] = raw.decode(
+                                "utf-8", "surrogateescape"
+                            )
+                        except OSError:
+                            pass
+                except OSError:
+                    pass
                 tarinfo.pax_headers = pax
             except Exception:
                 # non-fatal; continue
@@ -483,8 +499,20 @@ class BackupManager:
             total_bytes,
         )
 
-        # Build tar command with PAX format and archive contents ('.')
-        tar_cmd = ["tar", "--format=pax", "-c", "-C", self.input_path, "."]
+        # Build tar command with PAX format and archive contents ('.').
+        # --acls/--xattrs capture POSIX ACLs and extended attributes (incl.
+        # SELinux labels via xattrs-include='*'); restore passes the same flags.
+        tar_cmd = [
+            "tar",
+            "--format=pax",
+            "--acls",
+            "--xattrs",
+            "--xattrs-include=*",
+            "-c",
+            "-C",
+            self.input_path,
+            ".",
+        ]
         comp_cmd = codecs.compressor_argv(self.compression) or []
 
         # The passphrase fd (symmetric mode) is created just before spawning gpg

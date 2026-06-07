@@ -356,6 +356,11 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
             # which must survive even when the target host lacks the same names.
             "--numeric-owner",
             "--preserve-permissions",
+            # Restore POSIX ACLs + extended attributes (incl. SELinux labels)
+            # that the backup captured with the matching flags.
+            "--acls",
+            "--xattrs",
+            "--xattrs-include=*",
         ]
         # Insert decompression flags right after the tar binary (e.g. "-z" for
         # gzip, "-I zstd" for zstd). Driven by the codec registry.

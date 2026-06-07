@@ -294,6 +294,19 @@ class CopyManager:
                     )
                     raise
 
+        # Re-apply directory timestamps now that their children are in place:
+        # creating files inside a directory bumps that directory's mtime, so the
+        # copystat done at creation time was overwritten. Deepest-first so a
+        # parent is never re-touched after its mtime is restored.
+        for relpath, src_full in sorted(dir_entries, key=lambda e: -e[0].count(os.sep)):
+            dest_dir = os.path.join(self.output_path, relpath)
+            if os.path.islink(src_full):
+                continue  # symlink dirs: nothing to re-stat
+            try:
+                shutil.copystat(src_full, dest_dir)
+            except Exception:
+                logger.debug("Failed to re-copystat dir %s -> %s", src_full, dest_dir)
+
         # try to copy top-level input dir metadata into destination root
         try:
             try:

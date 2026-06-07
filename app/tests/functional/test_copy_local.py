@@ -22,12 +22,14 @@ def test_copy_preserves_tree(tmp_path, data_tree, fingerprint):
 
     compare_ownership = os.geteuid() == 0
     for rel in before:
-        b_type, b_size, b_mode, b_uid, b_gid, b_content = before[rel]
-        a_type, a_size, a_mode, a_uid, a_gid, a_content = after[rel]
+        b_type, b_size, b_mode, b_uid, b_gid, b_mtime, b_content = before[rel]
+        a_type, a_size, a_mode, a_uid, a_gid, a_mtime, a_content = after[rel]
         assert a_type == b_type, f"type mismatch at {rel}"
         assert a_size == b_size, f"size mismatch at {rel}"
         assert a_mode == b_mode, f"mode mismatch at {rel}"
         assert a_content == b_content, f"content mismatch at {rel}"
+        if b_mtime is not None:
+            assert a_mtime == b_mtime, f"mtime mismatch at {rel}"
         # CopyManager uses shutil.copy2 + chown; ownership preserved only as root.
         if compare_ownership:
             assert a_uid == b_uid, f"uid mismatch at {rel}"

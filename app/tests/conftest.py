@@ -192,16 +192,19 @@ def _tree_fingerprint(
             mode = stat.S_IMODE(st.st_mode)
             uid = st.st_uid if include_ownership else None
             gid = st.st_gid if include_ownership else None
+            mtime = int(st.st_mtime)  # whole seconds: robust to sub-second drift
             if full.is_symlink():
-                out[rel] = ("symlink", 0, mode, uid, gid, os.readlink(full))
+                # symlink mtime is not preserved by plain copy (os.symlink), so
+                # it is intentionally excluded from the fingerprint.
+                out[rel] = ("symlink", 0, mode, uid, gid, None, os.readlink(full))
             elif full.is_dir():
-                out[rel] = ("dir", 0, mode, uid, gid, None)
+                out[rel] = ("dir", 0, mode, uid, gid, mtime, None)
             else:
                 h = hashlib.sha256()
                 with open(full, "rb") as f:
                     for chunk in iter(lambda: f.read(65536), b""):
                         h.update(chunk)
-                out[rel] = ("file", st.st_size, mode, uid, gid, h.hexdigest())
+                out[rel] = ("file", st.st_size, mode, uid, gid, mtime, h.hexdigest())
     return out
 
 
