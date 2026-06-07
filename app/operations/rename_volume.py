@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from docker_client import DockerClient, DockerUnavailable, format_size
+from docker_client import DockerClient, DockerError, format_size
 
 logger = logging.getLogger("dvm")
 
@@ -60,7 +60,7 @@ def rename_volume(
         if client.volume_exists(target):
             raise RenameError(f"Target volume {target!r} already exists")
         source_info = client.inspect_volume(source)
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         raise RenameError(str(exc)) from exc
 
     if source_info.containers and not force:
@@ -82,7 +82,7 @@ def rename_volume(
     logger.info("Creating target volume: %s", target)
     try:
         client.create_volume(target)
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         raise RenameError(f"Failed to create target volume {target!r}: {exc}") from exc
 
     try:
@@ -157,7 +157,7 @@ def _volume_stats(client: DockerClient, name: str) -> dict[str, int]:
             ],
             volumes={name: {"bind": "/target", "mode": "ro"}},
         )
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         raise RenameError(f"Cannot read volume stats for {name!r}: {exc}") from exc
 
     lines = [ln.strip() for ln in output.splitlines() if ln.strip()]

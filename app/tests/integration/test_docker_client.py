@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
+from docker_client import VolumeNotFound
+
 # ---------------------------------------------------------------------------
 # Basic availability
 # ---------------------------------------------------------------------------
@@ -37,6 +41,11 @@ def test_list_is_alphabetically_sorted(docker_client):
 def test_volume_exists(docker_client, throwaway_volume):
     assert docker_client.volume_exists(throwaway_volume) is True
     assert docker_client.volume_exists(f"missing-{throwaway_volume}") is False
+
+
+def test_inspect_missing_raises_volume_not_found(docker_client, throwaway_volume):
+    with pytest.raises(VolumeNotFound):
+        docker_client.inspect_volume(f"missing-{throwaway_volume}")
 
 
 # ---------------------------------------------------------------------------

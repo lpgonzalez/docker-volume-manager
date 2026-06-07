@@ -27,8 +27,7 @@ from cli_shared import (
     console,
     err_console,
 )
-from docker_client import DockerClient, DockerUnavailable, VolumeInfo, format_size
-from pivot import _pivot_if_volumes
+from docker_client import DockerClient, DockerError, VolumeInfo, format_size
 from runners import _run_backup, _run_copy, _run_restore, _run_verify
 from volumes_cli import _render_volume_details, _render_volume_table
 
@@ -66,7 +65,7 @@ def _wizard_path_or_volume(
 
     try:
         volumes = client.list_volumes()
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
         return Prompt.ask(label, default=default_path), None
 
@@ -207,24 +206,6 @@ def _wizard_run_backup() -> None:
         parity = IntPrompt.ask("Parity percentage", default=0)
     passphrase, recipients = _wizard_encryption_choice()
     log_level, log_output_list = _wizard_common()
-    _pivot_if_volumes(
-        subcommand="backup",
-        env={
-            "BACKUP_FILE_NAME": name,
-            "INPUT_PATH": input_path,
-            "OUTPUT_PATH": output_path,
-            "COMPRESSION": compression,
-            "PARITY": parity,
-            "ENCRYPTION_KEY": passphrase,
-            "GPG_RECIPIENTS": ",".join(recipients) if recipients else None,
-            "LOG_LEVEL": log_level,
-            "LOG_OUTPUT": ",".join(log_output_list),
-        },
-        input_volume=input_volume,
-        output_volume=output_volume,
-        input_mode="ro",
-        output_mode="rw",
-    )
     _run_backup(
         name=name,
         input_path=input_path,
@@ -235,6 +216,8 @@ def _wizard_run_backup() -> None:
         recipients=recipients,
         sign_key=None,
         sign_key_passphrase=None,
+        input_volume=input_volume,
+        output_volume=output_volume,
         log_level=log_level,
         log_output=log_output_list,
     )
@@ -263,23 +246,6 @@ def _wizard_run_restore() -> None:
     )
     overwrite = Confirm.ask("Overwrite destination without prompting?", default=True)
     log_level, log_output_list = _wizard_common()
-    _pivot_if_volumes(
-        subcommand="restore",
-        env={
-            "BACKUP_FILE_NAME": name,
-            "INPUT_PATH": input_path,
-            "OUTPUT_PATH": output_path,
-            "TIMESTAMP": timestamp,
-            "ENCRYPTION_KEY": encryption_key,
-            "COPY_OVERWRITE": "Y" if overwrite else "N",
-            "LOG_LEVEL": log_level,
-            "LOG_OUTPUT": ",".join(log_output_list),
-        },
-        input_volume=input_volume,
-        output_volume=output_volume,
-        input_mode="rw",
-        output_mode="rw",
-    )
     _run_restore(
         name=name,
         input_path=input_path,
@@ -287,6 +253,8 @@ def _wizard_run_restore() -> None:
         timestamp=timestamp,
         encryption_key=encryption_key,
         overwrite=overwrite,
+        input_volume=input_volume,
+        output_volume=output_volume,
         log_level=log_level,
         log_output=log_output_list,
     )
@@ -300,23 +268,11 @@ def _wizard_run_verify() -> None:
     encrypted = Confirm.ask("Is the backup encrypted?", default=False)
     encryption_key = Prompt.ask("Passphrase", password=True) if encrypted else None
     log_level, log_output_list = _wizard_common()
-    _pivot_if_volumes(
-        subcommand="verify",
-        env={
-            "BACKUP_FILE_NAME": name,
-            "OUTPUT_PATH": output_path,
-            "ENCRYPTION_KEY": encryption_key,
-            "LOG_LEVEL": log_level,
-            "LOG_OUTPUT": ",".join(log_output_list),
-        },
-        input_volume=None,
-        output_volume=output_volume,
-        output_mode="rw",
-    )
     _run_verify(
         name=name,
         output_path=output_path,
         encryption_key=encryption_key,
+        output_volume=output_volume,
         log_level=log_level,
         log_output=log_output_list,
     )
@@ -331,24 +287,12 @@ def _wizard_run_copy() -> None:
     )
     overwrite = Confirm.ask("Overwrite destination contents?", default=True)
     log_level, log_output_list = _wizard_common()
-    _pivot_if_volumes(
-        subcommand="copy",
-        env={
-            "INPUT_PATH": input_path,
-            "OUTPUT_PATH": output_path,
-            "COPY_OVERWRITE": "Y" if overwrite else "N",
-            "LOG_LEVEL": log_level,
-            "LOG_OUTPUT": ",".join(log_output_list),
-        },
-        input_volume=input_volume,
-        output_volume=output_volume,
-        input_mode="ro",
-        output_mode="rw",
-    )
     _run_copy(
         input_path=input_path,
         output_path=output_path,
         overwrite=overwrite,
+        input_volume=input_volume,
+        output_volume=output_volume,
         log_level=log_level,
         log_output=log_output_list,
     )
@@ -384,10 +328,30 @@ def _wizard_volumes() -> None:
             _wizard_volumes_remove(client)
 
 
+def _pick_volume(volumes: list[VolumeInfo], prompt: str) -> VolumeInfo | None:
+    """Prompt for a volume by 1-based index or name (table rendered by caller).
+
+    Returns the selected VolumeInfo, or None on blank input / no match — the
+    caller decides what that means (cancel, abort, re-prompt, ...).
+    """
+    by_name = {v.name: v for v in volumes}
+    choice = Prompt.ask(prompt, default="").strip()
+    if not choice:
+        return None
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(volumes):
+            return volumes[idx]
+    elif choice in by_name:
+        return by_name[choice]
+    err_console.print(f"[red]No volume matches {choice!r}.[/]")
+    return None
+
+
 def _wizard_volumes_show_list(client: DockerClient) -> None:
     try:
         volumes = client.list_volumes()
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
         return
     if not volumes:
@@ -407,34 +371,22 @@ def _wizard_volumes_show_list(client: DockerClient) -> None:
 def _wizard_volumes_inspect_one(client: DockerClient) -> None:
     try:
         volumes = client.list_volumes()
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
         return
     if not volumes:
         console.print("[yellow]No Docker volumes found.[/]")
         return
     _render_volume_table(volumes, show_size=False)
-    by_name = {v.name: v for v in volumes}
-    choice = Prompt.ask(
-        "Volume [cyan]#[/] or [cyan]name[/] to inspect",
-        default="",
-    ).strip()
-    if not choice:
-        return
-    target: str | None = None
-    if choice.isdigit():
-        idx = int(choice) - 1
-        if 0 <= idx < len(volumes):
-            target = volumes[idx].name
-    elif choice in by_name:
-        target = choice
-    if not target:
-        err_console.print(f"[red]No volume matches {choice!r}.[/]")
+    picked = _pick_volume(volumes, "Volume [cyan]#[/] or [cyan]name[/] to inspect")
+    if picked is None:
         return
     try:
-        with console.status(f"[bold blue]Inspecting {target}...", spinner="dots"):
-            info = client.inspect_volume(target, with_size=True, with_contents=True)
-    except DockerUnavailable as exc:
+        with console.status(f"[bold blue]Inspecting {picked.name}...", spinner="dots"):
+            info = client.inspect_volume(
+                picked.name, with_size=True, with_contents=True
+            )
+    except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
         return
     _render_volume_details(info)
@@ -449,7 +401,7 @@ def _wizard_volumes_create(client: DockerClient) -> None:
             err_console.print(f"[yellow]Volume {name!r} already exists.[/]")
             return
         info = client.create_volume(name)
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
         return
     console.print(
@@ -461,29 +413,15 @@ def _wizard_volumes_create(client: DockerClient) -> None:
 def _wizard_volumes_remove(client: DockerClient) -> None:
     try:
         volumes = client.list_volumes()
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
         return
     if not volumes:
         console.print("[yellow]No Docker volumes found.[/]")
         return
     _render_volume_table(volumes, show_size=False)
-    by_name = {v.name: v for v in volumes}
-    choice = Prompt.ask(
-        "Volume [cyan]#[/] or [cyan]name[/] to remove",
-        default="",
-    ).strip()
-    if not choice:
-        return
-    target: VolumeInfo | None = None
-    if choice.isdigit():
-        idx = int(choice) - 1
-        if 0 <= idx < len(volumes):
-            target = volumes[idx]
-    elif choice in by_name:
-        target = by_name[choice]
-    if not target:
-        err_console.print(f"[red]No volume matches {choice!r}.[/]")
+    target = _pick_volume(volumes, "Volume [cyan]#[/] or [cyan]name[/] to remove")
+    if target is None:
         return
 
     _render_volume_details(target)
@@ -507,7 +445,7 @@ def _wizard_volumes_remove(client: DockerClient) -> None:
         return
     try:
         client.remove_volume(target.name, force=force)
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
         return
     console.print(f"[bold green]✓[/] Removed volume [bold]{target.name}[/]")
@@ -526,7 +464,7 @@ def _wizard_rename(client: DockerClient | None = None) -> None:
 
     try:
         volumes = client.list_volumes()
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
         return
     if not volumes:
@@ -536,20 +474,10 @@ def _wizard_rename(client: DockerClient | None = None) -> None:
     _render_volume_table(volumes, show_size=False)
     by_name = {v.name: v for v in volumes}
 
-    choice = Prompt.ask(
-        "Source volume [cyan]#[/] or [cyan]name[/] (blank to cancel)", default=""
-    ).strip()
-    if not choice:
-        return
-    source_info: VolumeInfo | None = None
-    if choice.isdigit():
-        idx = int(choice) - 1
-        if 0 <= idx < len(volumes):
-            source_info = volumes[idx]
-    elif choice in by_name:
-        source_info = by_name[choice]
-    if not source_info:
-        err_console.print(f"[red]No volume matches {choice!r}.[/]")
+    source_info = _pick_volume(
+        volumes, "Source volume [cyan]#[/] or [cyan]name[/] (blank to cancel)"
+    )
+    if source_info is None:
         return
 
     target = Prompt.ask(f"New name for {source_info.name!r}").strip()
@@ -602,7 +530,7 @@ def _wizard_rename(client: DockerClient | None = None) -> None:
     except RenameError as exc:
         err_console.print(f"[bold red]Rename failed:[/] {exc}")
         return
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
         return
 

@@ -23,7 +23,7 @@ from cli_shared import (
     console,
     err_console,
 )
-from docker_client import DockerClient, DockerUnavailable
+from docker_client import DockerClient, DockerError
 
 
 def _pivot_if_volumes(
@@ -65,7 +65,7 @@ def _pivot_if_volumes(
             continue
         try:
             exists = client.volume_exists(vol)
-        except DockerUnavailable as exc:
+        except DockerError as exc:
             _docker_fail(exc)
         if not exists:
             err_console.print(
@@ -109,7 +109,7 @@ def _pivot_if_volumes(
             inherit_bind_mounts=True,
             tty=False,
         )
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         err_console.print(f"[bold red]Helper container error:[/] {exc}")
         raise typer.Exit(EXIT_CONFIG) from None
 

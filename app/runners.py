@@ -23,6 +23,7 @@ from cli_shared import (
     err_console,
 )
 from config import Config
+from pivot import _pivot_if_volumes
 
 
 def _build_config(**fields) -> Config:
@@ -70,6 +71,13 @@ def _run_operation(cfg: Config) -> None:
     raise typer.Exit(EXIT_OPERATION)
 
 
+# Each runner first pivots to a helper container if a volume flag is set
+# (no-op otherwise), then builds a validated Config and dispatches it. The pivot
+# env mirrors the Config fields as env vars so the helper re-parses them through
+# the same command path — built here once instead of in every CLI command and
+# wizard step.
+
+
 def _run_backup(
     *,
     name: str,
@@ -81,9 +89,31 @@ def _run_backup(
     recipients: list[str] | None = None,
     sign_key: str | None = None,
     sign_key_passphrase: str | None = None,
+    input_volume: str | None = None,
+    output_volume: str | None = None,
     log_level: str,
     log_output: list[str],
 ) -> None:
+    _pivot_if_volumes(
+        subcommand="backup",
+        env={
+            "BACKUP_FILE_NAME": name,
+            "INPUT_PATH": input_path,
+            "OUTPUT_PATH": output_path,
+            "COMPRESSION": compression,
+            "PARITY": parity,
+            "ENCRYPTION_KEY": encryption_key,
+            "GPG_RECIPIENTS": ",".join(recipients) if recipients else None,
+            "SIGN_KEY": sign_key,
+            "SIGN_KEY_PASSPHRASE": sign_key_passphrase,
+            "LOG_LEVEL": log_level,
+            "LOG_OUTPUT": ",".join(log_output),
+        },
+        input_volume=input_volume,
+        output_volume=output_volume,
+        input_mode="ro",
+        output_mode="rw",
+    )
     cfg = _build_config(
         OPERATION="BACKUP",
         BACKUP_FILE_NAME=name,
@@ -109,9 +139,28 @@ def _run_restore(
     timestamp: str | None,
     encryption_key: str | None,
     overwrite: bool,
+    input_volume: str | None = None,
+    output_volume: str | None = None,
     log_level: str,
     log_output: list[str],
 ) -> None:
+    _pivot_if_volumes(
+        subcommand="restore",
+        env={
+            "BACKUP_FILE_NAME": name,
+            "INPUT_PATH": input_path,
+            "OUTPUT_PATH": output_path,
+            "TIMESTAMP": timestamp,
+            "ENCRYPTION_KEY": encryption_key,
+            "COPY_OVERWRITE": "Y" if overwrite else "N",
+            "LOG_LEVEL": log_level,
+            "LOG_OUTPUT": ",".join(log_output),
+        },
+        input_volume=input_volume,
+        output_volume=output_volume,
+        input_mode="rw",
+        output_mode="rw",
+    )
     cfg = _build_config(
         OPERATION="RESTORE",
         BACKUP_FILE_NAME=name,
@@ -131,9 +180,23 @@ def _run_verify(
     name: str,
     output_path: str,
     encryption_key: str | None,
+    output_volume: str | None = None,
     log_level: str,
     log_output: list[str],
 ) -> None:
+    _pivot_if_volumes(
+        subcommand="verify",
+        env={
+            "BACKUP_FILE_NAME": name,
+            "OUTPUT_PATH": output_path,
+            "ENCRYPTION_KEY": encryption_key,
+            "LOG_LEVEL": log_level,
+            "LOG_OUTPUT": ",".join(log_output),
+        },
+        input_volume=None,
+        output_volume=output_volume,
+        output_mode="rw",
+    )
     cfg = _build_config(
         OPERATION="VERIFY",
         BACKUP_FILE_NAME=name,
@@ -150,9 +213,25 @@ def _run_copy(
     input_path: str,
     output_path: str,
     overwrite: bool,
+    input_volume: str | None = None,
+    output_volume: str | None = None,
     log_level: str,
     log_output: list[str],
 ) -> None:
+    _pivot_if_volumes(
+        subcommand="copy",
+        env={
+            "INPUT_PATH": input_path,
+            "OUTPUT_PATH": output_path,
+            "COPY_OVERWRITE": "Y" if overwrite else "N",
+            "LOG_LEVEL": log_level,
+            "LOG_OUTPUT": ",".join(log_output),
+        },
+        input_volume=input_volume,
+        output_volume=output_volume,
+        input_mode="ro",
+        output_mode="rw",
+    )
     cfg = _build_config(
         OPERATION="COPY",
         INPUT_PATH=input_path,

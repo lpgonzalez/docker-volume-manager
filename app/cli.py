@@ -41,9 +41,8 @@ from cli_shared import (
     console,
     err_console,
 )
-from docker_client import DockerClient, DockerUnavailable, format_size
+from docker_client import DockerClient, DockerError, format_size
 from gpg_keyring import KeyringError, setup_recipient_keyring, tear_down_keyring
-from pivot import _pivot_if_volumes
 from runners import _run_backup, _run_copy, _run_restore, _run_verify
 from volumes_cli import volumes_app
 
@@ -197,26 +196,6 @@ def backup(
         )
 
     try:
-        _pivot_if_volumes(
-            subcommand="backup",
-            env={
-                "BACKUP_FILE_NAME": name,
-                "INPUT_PATH": input_path,
-                "OUTPUT_PATH": output_path,
-                "COMPRESSION": compression,
-                "PARITY": parity,
-                "ENCRYPTION_KEY": encryption_key,
-                "GPG_RECIPIENTS": ",".join(recipient_list) if recipient_list else None,
-                "SIGN_KEY": sign_key,
-                "SIGN_KEY_PASSPHRASE": sign_key_passphrase,
-                "LOG_LEVEL": log_level,
-                "LOG_OUTPUT": log_output,
-            },
-            input_volume=input_volume,
-            output_volume=output_volume,
-            input_mode="ro",
-            output_mode="rw",
-        )
         _run_backup(
             name=name,
             input_path=input_path,
@@ -227,6 +206,8 @@ def backup(
             recipients=recipient_list,
             sign_key=sign_key,
             sign_key_passphrase=sign_key_passphrase,
+            input_volume=input_volume,
+            output_volume=output_volume,
             log_level=log_level,
             log_output=_parse_log_output(log_output),
         )
@@ -293,23 +274,6 @@ def restore(
     log_output: str = typer.Option("console", "--log-output", envvar="LOG_OUTPUT"),
 ) -> None:
     """Restore an existing backup into OUTPUT_PATH."""
-    _pivot_if_volumes(
-        subcommand="restore",
-        env={
-            "BACKUP_FILE_NAME": name,
-            "INPUT_PATH": input_path,
-            "OUTPUT_PATH": output_path,
-            "TIMESTAMP": timestamp,
-            "ENCRYPTION_KEY": encryption_key,
-            "COPY_OVERWRITE": "Y" if overwrite else "N",
-            "LOG_LEVEL": log_level,
-            "LOG_OUTPUT": log_output,
-        },
-        input_volume=input_volume,
-        output_volume=output_volume,
-        input_mode="rw",
-        output_mode="rw",
-    )
     _run_restore(
         name=name,
         input_path=input_path,
@@ -317,6 +281,8 @@ def restore(
         timestamp=timestamp,
         encryption_key=encryption_key,
         overwrite=overwrite,
+        input_volume=input_volume,
+        output_volume=output_volume,
         log_level=log_level,
         log_output=_parse_log_output(log_output),
     )
@@ -354,23 +320,11 @@ def verify(
     log_output: str = typer.Option("console", "--log-output", envvar="LOG_OUTPUT"),
 ) -> None:
     """Verify a backup: existence, decryption, decompression and PAR2 parity."""
-    _pivot_if_volumes(
-        subcommand="verify",
-        env={
-            "BACKUP_FILE_NAME": name,
-            "OUTPUT_PATH": output_path,
-            "ENCRYPTION_KEY": encryption_key,
-            "LOG_LEVEL": log_level,
-            "LOG_OUTPUT": log_output,
-        },
-        input_volume=None,
-        output_volume=output_volume,
-        output_mode="rw",
-    )
     _run_verify(
         name=name,
         output_path=output_path,
         encryption_key=encryption_key,
+        output_volume=output_volume,
         log_level=log_level,
         log_output=_parse_log_output(log_output),
     )
@@ -408,24 +362,12 @@ def copy(
     log_output: str = typer.Option("console", "--log-output", envvar="LOG_OUTPUT"),
 ) -> None:
     """Mirror INPUT_PATH into OUTPUT_PATH (no compression or encryption)."""
-    _pivot_if_volumes(
-        subcommand="copy",
-        env={
-            "INPUT_PATH": input_path,
-            "OUTPUT_PATH": output_path,
-            "COPY_OVERWRITE": "Y" if overwrite else "N",
-            "LOG_LEVEL": log_level,
-            "LOG_OUTPUT": log_output,
-        },
-        input_volume=input_volume,
-        output_volume=output_volume,
-        input_mode="ro",
-        output_mode="rw",
-    )
     _run_copy(
         input_path=input_path,
         output_path=output_path,
         overwrite=overwrite,
+        input_volume=input_volume,
+        output_volume=output_volume,
         log_level=log_level,
         log_output=_parse_log_output(log_output),
     )
@@ -474,7 +416,7 @@ def rename(
             raise typer.Exit(EXIT_VALIDATION)
         with console.status(f"[bold blue]Inspecting {source}...", spinner="dots"):
             source_info = client.inspect_volume(source, with_size=True)
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         _docker_fail(exc)
 
     users = (
@@ -526,7 +468,7 @@ def rename(
     except RenameError as exc:
         err_console.print(f"[bold red]Rename failed:[/] {exc}")
         raise typer.Exit(EXIT_OPERATION) from None
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         _docker_fail(exc)
 
     console.print(

@@ -16,7 +16,7 @@ import typer
 from rich.console import Console
 
 from config import VALID_COMPRESSION, VALID_LOG_LEVELS, VALID_LOG_OUTPUTS
-from docker_client import DockerUnavailable
+from docker_client import DockerError
 
 COMPRESSION_CHOICES = sorted(VALID_COMPRESSION)
 LOG_LEVEL_CHOICES = sorted(VALID_LOG_LEVELS)
@@ -73,6 +73,6 @@ def _parse_log_output(value: str) -> list[str]:
     return parts
 
 
-def _docker_fail(exc: DockerUnavailable) -> None:
-    err_console.print(f"[bold red]Docker unavailable:[/] {exc}")
+def _docker_fail(exc: DockerError) -> None:
+    err_console.print(f"[bold red]Docker error:[/] {exc}")
     raise typer.Exit(EXIT_CONFIG)

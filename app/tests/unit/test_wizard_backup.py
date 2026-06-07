@@ -25,8 +25,8 @@ def test_wizard_backup_passes_collected_values_to_runner(monkeypatch):
     monkeypatch.setattr(wizard.Prompt, "ask", staticmethod(lambda *a, **k: "ZSTD"))
     monkeypatch.setattr(wizard.IntPrompt, "ask", staticmethod(lambda *a, **k: 0))
 
-    # Intercept the heavy lifting: we only assert argument plumbing here.
-    monkeypatch.setattr(wizard, "_pivot_if_volumes", lambda **k: None)
+    # Intercept the runner (it owns the pivot + dispatch); we only assert that the
+    # wizard plumbs the collected values through correctly.
     monkeypatch.setattr(wizard, "_run_backup", lambda **k: captured.update(k))
 
     wizard._wizard_run_backup()

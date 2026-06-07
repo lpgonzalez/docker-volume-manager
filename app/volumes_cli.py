@@ -23,7 +23,7 @@ from cli_shared import (
     console,
     err_console,
 )
-from docker_client import DockerClient, DockerUnavailable, VolumeInfo, format_size
+from docker_client import DockerClient, DockerError, VolumeInfo, format_size
 
 volumes_app = typer.Typer(
     name="volumes",
@@ -101,7 +101,7 @@ def volumes_list(
     client = DockerClient()
     try:
         volumes = client.list_volumes()
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         _docker_fail(exc)
 
     if orphans_only:
@@ -129,7 +129,7 @@ def volumes_create(
             err_console.print(f"[yellow]Volume {name!r} already exists.[/]")
             raise typer.Exit(EXIT_VALIDATION)
         info = client.create_volume(name)
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         _docker_fail(exc)
     console.print(
         f"[bold green]✓[/] Created volume [bold]{info.name}[/] "
@@ -151,7 +151,7 @@ def volumes_remove(
     client = DockerClient()
     try:
         info = client.inspect_volume(name, with_size=False, with_contents=False)
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         _docker_fail(exc)
 
     if info.containers and not force:
@@ -178,7 +178,7 @@ def volumes_remove(
 
     try:
         client.remove_volume(name, force=force)
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         _docker_fail(exc)
     console.print(f"[bold green]✓[/] Removed volume [bold]{name}[/]")
 
@@ -206,6 +206,6 @@ def volumes_inspect(
                 with_contents=not no_contents,
                 max_entries=max_entries,
             )
-    except DockerUnavailable as exc:
+    except DockerError as exc:
         _docker_fail(exc)
     _render_volume_details(info)

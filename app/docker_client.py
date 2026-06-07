@@ -14,8 +14,9 @@ Thin wrapper over docker-py covering the subset of operations DVM needs:
 - Generic `run_throwaway` primitive used by the input/output volume pivot flow
   and by the introspection helpers here.
 
-All failures surface as `DockerUnavailable` carrying an actionable message —
-the CLI prints that instead of a raw SDK traceback.
+All failures surface as `DockerError` (or a specific subclass:
+`DockerUnavailable`, `VolumeNotFound`, `VolumeConflict`, `VolumeInUse`) carrying
+an actionable message — the CLI prints that instead of a raw SDK traceback.
 
 Security note: mounting /var/run/docker.sock grants the container effective
 root on the host. Appropriate for local / trusted environments; audit before
@@ -37,8 +38,29 @@ SELF_IMAGE_ENV = "DVM_HELPER_IMAGE"
 FALLBACK_IMAGE = "docker_volume_manager:2.0"
 
 
-class DockerUnavailable(RuntimeError):
-    """Raised when the Docker daemon cannot be reached or used."""
+class DockerError(RuntimeError):
+    """Base class for any Docker operation failure surfaced by this facade.
+
+    Callers that don't care about the specific cause can catch ``DockerError``;
+    the subclasses below let them distinguish (e.g. a missing volume — user
+    error) from a daemon that is simply down (environment problem).
+    """
+
+
+class DockerUnavailable(DockerError):
+    """The Docker daemon cannot be reached (socket missing / not responding)."""
+
+
+class VolumeNotFound(DockerError):
+    """The requested volume does not exist."""
+
+
+class VolumeConflict(DockerError):
+    """A volume with that name already exists."""
+
+
+class VolumeInUse(DockerError):
+    """The volume is mounted by a container and cannot be removed."""
 
 
 @dataclass
@@ -74,9 +96,10 @@ class DockerClient:
     module never requires a reachable Docker daemon — useful in unit tests
     and when DVM is invoked for non-Docker work.
 
-    All methods raise :class:`DockerUnavailable` (with an actionable message)
-    when the socket is missing, the daemon is unreachable, or any underlying
-    docker-py call fails for a reason DVM should expose to the user.
+    All methods raise :class:`DockerError` (with an actionable message) when the
+    socket is missing, the daemon is unreachable, or any underlying docker-py
+    call fails. Volume-specific failures raise the matching subclass
+    (:class:`VolumeNotFound` / :class:`VolumeConflict` / :class:`VolumeInUse`).
     """
 
     def __init__(self, socket_path: str = DEFAULT_SOCKET):
@@ -157,7 +180,7 @@ class DockerClient:
         try:
             vol = client.volumes.get(name)
         except NotFound as exc:
-            raise DockerUnavailable(f"Volume {name!r} does not exist") from exc
+            raise VolumeNotFound(f"Volume {name!r} does not exist") from exc
         except Exception as exc:
             raise DockerUnavailable(
                 f"Failed to inspect volume {name!r}: {exc}"
@@ -175,6 +198,8 @@ class DockerClient:
         try:
             vol = client.volumes.create(name=name)
         except Exception as exc:
+            if getattr(exc, "status_code", None) == 409:
+                raise VolumeConflict(f"Volume {name!r} already exists") from exc
             raise DockerUnavailable(f"Failed to create volume {name!r}: {exc}") from exc
         return self._info_from(vol)
 
@@ -188,6 +213,8 @@ class DockerClient:
         except NotFound:
             logger.warning("Volume %s did not exist at removal time", name)
         except Exception as exc:
+            if getattr(exc, "status_code", None) == 409:
+                raise VolumeInUse(f"Volume {name!r} is in use by a container") from exc
             raise DockerUnavailable(f"Failed to remove volume {name!r}: {exc}") from exc
 
     def volume_exists(self, name: str) -> bool:
