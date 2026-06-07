@@ -54,6 +54,25 @@ FROM python:3.14-alpine AS runtime
 
 WORKDIR /app
 
+# --- Build-time metadata (populated by Makefile / CI) ------------------------
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+# --- OCI image labels --------------------------------------------------------
+LABEL org.opencontainers.image.title="docker-volume-manager" \
+      org.opencontainers.image.description="Containerized one-shot tool to backup, restore, verify, copy and rename Docker volumes (and arbitrary directories). ZSTD/GZ compression, GPG encryption, PAR2 parity, detached signing, full metadata fidelity (uid/gid/mode/xattrs/ACLs), live progress and a stall watchdog. Driven by a typer + rich CLI with a scriptable and an interactive (wizard) mode." \
+      org.opencontainers.image.authors="Lisardo Prieto <lisardo.prieto.gonzalez@gmail.com>" \
+      org.opencontainers.image.vendor="Lisardo Prieto" \
+      org.opencontainers.image.source="https://github.com/lpgonzalez/docker-volume-manager" \
+      org.opencontainers.image.url="https://hub.docker.com/r/lpgonzalez/docker-volume-manager" \
+      org.opencontainers.image.documentation="https://github.com/lpgonzalez/docker-volume-manager#readme" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.base.name="docker.io/library/python:3.14-alpine"
+
 # Default timezone for logs; override at runtime with `docker run -e TZ=...`.
 ENV TZ=Europe/Madrid
 

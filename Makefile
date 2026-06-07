@@ -25,6 +25,20 @@ image-name       = docker_volume_manager
 image-version    = 2.0
 container        = docker-volume-manager
 
+# Public release (Docker Hub). Override docker-user / release-version as needed.
+docker-user      = lpgonzalez
+dockerhub-repo   = docker-volume-manager
+dockerhub-image  = $(docker-user)/$(dockerhub-repo)
+release-version  = $(image-version).0
+platforms        = linux/amd64,linux/arm64
+
+# Build-time metadata baked into the OCI image labels (see Dockerfile).
+vcs-ref          = $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+build-date       = $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
+build-args       = --build-arg VERSION=$(release-version) \
+                   --build-arg VCS_REF=$(vcs-ref) \
+                   --build-arg BUILD_DATE=$(build-date)
+
 # Host <-> container path mappings
 in-dir           = $(PWD)/in_dir
 out-dir          = $(PWD)/out_dir
@@ -58,6 +72,7 @@ ts-env           = $(if $(timestamp),-e TIMESTAMP="$(timestamp)",)
 ##############################################################################
 
 .PHONY: help build build-prod build-test test test-unit test-functional test-integration test-integration-slow test-integration-all coverage lint format \
+        release release-dry buildx-create buildx-rm \
         run-backup run-backup-encrypt run-backup-parity \
         run-restore run-verify run-copy run-rename run-interactive \
         run-volumes-list run-volumes-inspect run-volumes-create run-volumes-remove \
@@ -82,6 +97,10 @@ help:
 	@echo "  coverage                                 # term-missing coverage (unit + functional)"
 	@echo "  lint                                     # ruff check (no changes)"
 	@echo "  format                                   # ruff format + ruff check --fix (writes)"
+	@echo ""
+	@echo "Release (multi-arch amd64+arm64 via buildx; needs docker login):"
+	@echo "  release      release-version=2.0.0       # build + push to $(dockerhub-image)"
+	@echo "  release-dry  release-version=2.0.0       # multi-arch build, no push"
 	@echo ""
 	@echo "Backup / restore / verify / copy"
 	@echo "  Shared vars: backup-file-name=, compression=(NONE|GZ|ZSTD), parity=,"
@@ -117,26 +136,50 @@ help:
 
 build: build-prod
 
+# Builds for the host architecture. OCI labels live in the Dockerfile and are
+# populated from the build-args below.
 build-prod:
-	docker build --platform linux/amd64 --target runtime \
+	docker build --target runtime $(build-args) \
 		--tag $(image-name):$(image-version) \
-		--label org.opencontainers.image.title="$(image-name)" \
-		--label org.opencontainers.image.version="$(image-version)" \
-		--label org.opencontainers.image.description="Docker Volume Manager" \
-		--label org.opencontainers.image.authors="Lisardo Prieto <me@lisardoprieto.com>" \
-		--label org.opencontainers.image.vendor="Lisardo Prieto" \
-		--label org.opencontainers.image.licenses="The MIT License (MIT)" \
-		--label org.opencontainers.image.created="$(shell date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-		--label org.opencontainers.image.source="https://github.com/lpgonzalez/docker-volume-manager" \
-		--label org.opencontainers.image.documentation="https://github.com/lpgonzalez/docker-volume-manager/blob/main/README.md" \
+		--tag $(image-name):latest \
 		.
-	docker tag $(image-name):$(image-version) $(image-name):latest
 
 build-test:
-	docker build --platform linux/amd64 --target test \
+	docker build --target test \
 		--tag $(image-name):$(image-version)-test \
 		--label org.opencontainers.image.title="$(image-name)-test" \
 		--label org.opencontainers.image.version="$(image-version)" \
+		.
+
+##############################################################################
+# Multi-arch release to Docker Hub (amd64 + arm64 via buildx).
+# CI does this automatically on a v*.*.* tag (.github/workflows). These targets
+# are for manual / dry-run releases. Requires `docker login` first.
+##############################################################################
+
+# One-off: create a buildx builder that supports multi-arch (qemu-driven).
+buildx-create:
+	docker buildx create --name dvm-builder --use --bootstrap || \
+		docker buildx use dvm-builder
+
+buildx-rm:
+	docker buildx rm dvm-builder || echo "Builder not present, nothing to remove."
+
+# Build + push the multi-arch image to Docker Hub, tagged with the release
+# version and `latest`. Example: make release release-version=2.0.0
+release: buildx-create
+	docker buildx build --target runtime $(build-args) \
+		--platform $(platforms) \
+		--tag $(dockerhub-image):$(release-version) \
+		--tag $(dockerhub-image):latest \
+		--push \
+		.
+
+# Same as `release` but builds without pushing (validates the multi-arch build).
+release-dry: buildx-create
+	docker buildx build --target runtime $(build-args) \
+		--platform $(platforms) \
+		--tag $(dockerhub-image):$(release-version) \
 		.
 
 test: build-test

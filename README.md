@@ -1,12 +1,18 @@
 # Docker Volume Manager (DVM)
 
+[![Docker Hub](https://img.shields.io/docker/pulls/lpgonzalez/docker-volume-manager?logo=docker&label=docker%20pulls)](https://hub.docker.com/r/lpgonzalez/docker-volume-manager)
+[![Image size](https://img.shields.io/docker/image-size/lpgonzalez/docker-volume-manager/latest?logo=docker&label=image)](https://hub.docker.com/r/lpgonzalez/docker-volume-manager)
+[![CI](https://github.com/lpgonzalez/docker-volume-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/lpgonzalez/docker-volume-manager/actions/workflows/ci.yml)
+[![Architectures](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blue?logo=docker)](https://hub.docker.com/r/lpgonzalez/docker-volume-manager/tags)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
+
 Container-native tool for backing up, restoring, verifying, copying and
 renaming Docker volumes — with strong metadata preservation, modern
 compression, GPG encryption + signing, PAR2 parity protection, and a
 typer + rich CLI that drives both scripted and interactive workflows.
 
-Runs as a single-shot Docker image (~134 MB on Alpine + Python 3.14).
-No `pip install`, no virtualenv on the host.
+Runs as a single-shot Docker image (~134 MB on Alpine + Python 3.14),
+multi-arch (**amd64 + arm64**). No `pip install`, no virtualenv on the host.
 
 ---
 
@@ -24,38 +30,74 @@ No `pip install`, no virtualenv on the host.
 - **Modern crypto**: GPG symmetric (`--encryption-key`) or asymmetric via keyring (`--recipient`) or via key file imported into a temporary keyring (`--recipient-key-file`). Detached signing (`--sign-key`).
 - **Modern compression**: ZSTD-19 multi-core by default; GZ via `pigz` for universal interop. bz2/xz removed in favour of zstd.
 - **PAR2 parity**: configurable percentage (`--parity`), single recovery volume (`-n1`) for compact layout.
-- **Production-friendly logging**: rich console output on TTY; JSON / text file logs for non-interactive runs. Progress bars adapt to TTY automatically.
-- **Tested**: 178 tests across three tiers (unit / functional / integration). Multiple real bugs caught by the suite during development.
+- **Full metadata fidelity**: backup/restore preserve the exact **numeric uid/gid** (`--numeric-owner`), mode (incl. setuid/setgid), mtime, **extended attributes, POSIX ACLs and SELinux labels** (`tar --acls --xattrs`), symlinks and special files — critical for restoring service volumes (PostgreSQL, web servers).
+- **Live progress + stall watchdog**: real-time byte progress (size, rate, ETA) on a TTY, throttled log lines off-TTY. A watchdog samples `/proc/<pid>/io` and terminates a backup/restore that stops doing I/O for `DVM_STALL_TIMEOUT` seconds (default 300, `0` disables).
+- **Production-friendly logging**: rich console output on TTY; JSON / text file logs for non-interactive runs.
+- **Multi-arch**: published for `linux/amd64` and `linux/arm64`; CI runs the full suite natively on both.
+- **Tested**: 200+ tests across three tiers (unit / functional / integration), `ruff`-linted, with realistic data trees (varied permissions, UIDs/GIDs, symlinks, unicode names, xattrs).
+
+---
+
+## Supported tags and architectures
+
+Published on Docker Hub: [`lpgonzalez/docker-volume-manager`](https://hub.docker.com/r/lpgonzalez/docker-volume-manager)
+
+| Tag | Meaning |
+|-----|---------|
+| `latest` | The most recent release. |
+| `X.Y.Z` (e.g. `2.0.0`) | A specific release (immutable). |
+| `X.Y`, `X` | Rolling minor / major (`2.0`, `2`). |
+
+Each tag is a multi-arch manifest covering **`linux/amd64`** and
+**`linux/arm64`** — Docker pulls the variant matching your host automatically.
 
 ---
 
 ## Quick start
 
-```bash
-# Build the image
-make build-prod
+### From Docker Hub (no build needed)
 
-# Backup a host directory to another host directory
+```bash
+mkdir -p in_dir out_dir logs
+echo "hello" > in_dir/test.txt
+
+# Backup ./in_dir → ./out_dir as a ZSTD archive
+docker run --rm \
+  -v "$PWD/in_dir:/app/input_dir" \
+  -v "$PWD/out_dir:/app/output_dir" \
+  -v "$PWD/logs:/app/logs" \
+  lpgonzalez/docker-volume-manager \
+  python main.py backup -n demo -c ZSTD -p 30
+
+# Interactive wizard (needs a TTY and, for volume ops, the Docker socket)
+docker run --rm -it \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/in_dir:/app/input_dir" \
+  -v "$PWD/out_dir:/app/output_dir" \
+  lpgonzalez/docker-volume-manager \
+  python main.py interactive
+```
+
+### From source via the Makefile (local build)
+
+```bash
+make build-prod                          # build the local image
+
 mkdir -p in_dir out_dir
 echo "hello" > in_dir/test.txt
 
-make run-backup backup-file-name=demo
-# → out_dir/demo/<timestamp>/demo.tar.zst
-
-# Restore it back into a fresh dir
-make run-restore backup-file-name=demo
-
-# Wizard: interactive UX
-make run-interactive
+make run-backup backup-file-name=demo    # → out_dir/demo/<timestamp>/demo.tar.zst
+make run-restore backup-file-name=demo   # restore it back
+make run-interactive                     # the wizard
 ```
 
-Or invoking the CLI directly (without Make):
+Direct CLI against the locally-built image:
 
 ```bash
 docker run --rm \
-  -v $PWD/in_dir:/app/input_dir \
-  -v $PWD/out_dir:/app/output_dir \
-  -v $PWD/logs:/app/logs \
+  -v "$PWD/in_dir:/app/input_dir" \
+  -v "$PWD/out_dir:/app/output_dir" \
+  -v "$PWD/logs:/app/logs" \
   docker_volume_manager:2.0 \
   python main.py backup -n demo -c ZSTD -p 30 -k 'sup3rs3cr3t'
 ```
@@ -412,13 +454,31 @@ app/tests/integration/  # uses Docker daemon (~10-50s)
 ```
 
 Integration tests skip themselves cleanly when `/var/run/docker.sock`
-isn't available. The suite includes ~178 tests with realistic data
-trees (varied permissions, UIDs/GIDs, symlinks, unicode names).
+isn't available. The suite includes 200+ tests with realistic data
+trees (varied permissions, UIDs/GIDs, symlinks, unicode names, xattrs),
+plus metadata-fidelity assertions on every round-trip.
 
 ```bash
 make test                  # unit + functional (no Docker daemon needed)
 make test-integration      # fast integration tier
 make test-integration-slow # full backup/restore through helper containers
+make lint                  # ruff check
+make format                # ruff format + safe autofixes
+```
+
+CI (`.github/workflows/ci.yml`) runs `lint` + the full suite **natively on
+both `amd64` and `arm64`** on every push and PR. Tagged releases
+(`v*.*.*`) trigger `docker-publish.yml`, which builds the multi-arch image
+with `buildx` and pushes it to Docker Hub (and syncs this README to the
+repository's Overview page).
+
+To cut a release: bump the version, push a `vX.Y.Z` tag, and CI does the
+rest. For a manual multi-arch publish from your machine:
+
+```bash
+docker login
+make release release-version=2.0.0    # build + push amd64+arm64 to Docker Hub
+make release-dry release-version=2.0.0 # multi-arch build only, no push
 ```
 
 ---
@@ -481,18 +541,26 @@ sequenceDiagram
 ```
 app/
 ├── main.py                # thin shim → cli.main()
-├── cli.py                 # typer + rich CLI; pivot logic; wizard
+├── cli.py                 # typer app + op commands + wiring (thin layer)
+├── cli_shared.py          # exit codes, consoles, parsing helpers
+├── pivot.py               # helper-container pivot for volume ops
+├── runners.py             # Config build + pivot dispatch + typed exit codes
+├── volumes_cli.py         # `dvm volumes` sub-app + table/detail renderers
+├── wizard.py              # interactive wizard
 ├── config.py              # typed Config dataclass + logger setup
-├── progress.py            # ProgressReporter (TTY-adaptive)
+├── progress.py            # TTY-adaptive progress (count / bytes modes)
+├── process_monitor.py     # live byte progress + stall watchdog (/proc/io)
 ├── docker_client.py       # Docker SDK facade + helper-container spawn
 ├── gpg_keyring.py         # ephemeral GPG keyring for --recipient-key-file
 ├── health_check.py        # status file probe for HEALTHCHECK
 └── operations/
     ├── docker_volume_manager.py  # dispatcher; map_compression
+    ├── codecs.py          # single compression-codec registry
     ├── backup_files.py    # BackupManager: tar, compress, encrypt, sign, par2
     ├── restore_files.py   # restore() + extraction + decryption + par2 repair
     ├── copy_files.py      # CopyManager: dir↔dir with metadata preservation
     ├── verify_backup.py   # BackupVerifier
+    ├── fs_overwrite.py    # shared overwrite/clear/YES helpers
     └── rename_volume.py   # rename_volume() — atomic with rollback
 ```
 

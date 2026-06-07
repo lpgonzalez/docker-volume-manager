@@ -1,0 +1,89 @@
+name: Build and publish Docker image
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'         # e.g. v2.0.0 -> publishes 2.0.0, 2.0, 2, latest
+  workflow_dispatch:     # allow manual runs (from Actions UI). When triggered
+                         # without a SemVer tag, only the README sync runs;
+                         # the image build job is skipped on purpose.
+
+env:
+  IMAGE_NAME: docker-volume-manager
+  REGISTRY: docker.io
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: build and publish the multi-arch image (amd64 + arm64).
+  # Only runs when a git tag matching v*.*.* is pushed; skipped otherwise.
+  # ---------------------------------------------------------------------------
+  publish-image:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime          # multi-stage Dockerfile: publish the runtime stage
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Job 2: sync README.md to the Docker Hub "Overview" page.
+  # Runs on tag releases AND on workflow_dispatch — refresh the Overview after
+  # doc-only edits without bumping a SemVer version. Requires DOCKERHUB_TOKEN
+  # with "Read, Write, Delete" scope (or "Modify repository details").
+  # ---------------------------------------------------------------------------
+  sync-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          short-description: "One-shot tool to backup, restore, verify, copy and rename Docker volumes (and directories)."
+          readme-filepath: ./README.md

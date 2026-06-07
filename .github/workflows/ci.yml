@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Lint + the full Docker-based test suite, natively on both architectures.
+  # GitHub's arm64 runners are free for public repositories.
+  test:
+    name: test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Lint (ruff)
+        run: make lint
+
+      - name: Unit + functional tests
+        run: make test
+
+      - name: Integration tests (mounts docker.sock)
+        run: make test-integration
+
+      - name: Build runtime image
+        run: make build-prod
