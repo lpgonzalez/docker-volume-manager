@@ -22,7 +22,7 @@ def user_container_factory(docker_client):
     import docker as docker_mod
 
     low = docker_mod.DockerClient(base_url="unix:///var/run/docker.sock")
-    image = os.environ.get("DVM_HELPER_IMAGE", "docker_volume_manager:2.0")
+    image = os.environ.get("DVM_HELPER_IMAGE", "docker_volume_manager:3.0")
     spawned = []
 
     def _spawn(volume_name: str):

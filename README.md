@@ -45,7 +45,7 @@ Published on Docker Hub: [`lpgonzalez/docker-volume-manager`](https://hub.docker
 | Tag | Meaning |
 |-----|---------|
 | `latest` | The most recent release. |
-| `X.Y.Z` (e.g. `2.0.0`) | A specific release (immutable). |
+| `X.Y.Z` (e.g. `3.0.0`) | A specific release (immutable). |
 | `X.Y`, `X` | Rolling minor / major (`2.0`, `2`). |
 
 Each tag is a multi-arch manifest covering **`linux/amd64`** and
@@ -98,7 +98,7 @@ docker run --rm \
   -v "$PWD/in_dir:/app/input_dir" \
   -v "$PWD/out_dir:/app/output_dir" \
   -v "$PWD/logs:/app/logs" \
-  docker_volume_manager:2.0 \
+  docker_volume_manager:3.0 \
   python main.py backup -n demo -c ZSTD -p 30 -k 'sup3rs3cr3t'
 ```
 
@@ -162,7 +162,7 @@ docker run --rm \
   -v ~/.gnupg:/root/.gnupg:ro \
   -v $PWD/in:/app/input_dir \
   -v $PWD/out:/app/output_dir \
-  docker_volume_manager:2.0 \
+  docker_volume_manager:3.0 \
   python main.py backup \
     -n release-2026-Q1 -c ZSTD -p 30 \
     -k 'sup3rs3cr3t' \
@@ -171,7 +171,7 @@ docker run --rm \
 # Backup of a Docker volume to another volume (no host paths involved)
 docker run --rm \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  docker_volume_manager:2.0 \
+  docker_volume_manager:3.0 \
   python main.py backup \
     --input-volume mydata \
     --output-volume backups-store \
@@ -269,7 +269,7 @@ docker run --rm -it \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v $PWD/in_dir:/app/input_dir \
   -v $PWD/out_dir:/app/output_dir \
-  docker_volume_manager:2.0 \
+  docker_volume_manager:3.0 \
   python main.py interactive
 ```
 
@@ -477,8 +477,8 @@ rest. For a manual multi-arch publish from your machine:
 
 ```bash
 docker login
-make release release-version=2.0.0    # build + push amd64+arm64 to Docker Hub
-make release-dry release-version=2.0.0 # multi-arch build only, no push
+make release release-version=3.0.0    # build + push amd64+arm64 to Docker Hub
+make release-dry release-version=3.0.0 # multi-arch build only, no push
 ```
 
 ---

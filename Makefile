@@ -22,7 +22,7 @@
 ##############################################################################
 
 image-name       = docker_volume_manager
-image-version    = 2.0
+image-version    = 3.0
 container        = docker-volume-manager
 
 # Public release (Docker Hub). Override docker-user / release-version as needed.
@@ -99,8 +99,8 @@ help:
 	@echo "  format                                   # ruff format + ruff check --fix (writes)"
 	@echo ""
 	@echo "Release (multi-arch amd64+arm64 via buildx; needs docker login):"
-	@echo "  release      release-version=2.0.0       # build + push to $(dockerhub-image)"
-	@echo "  release-dry  release-version=2.0.0       # multi-arch build, no push"
+	@echo "  release      release-version=3.0.0       # build + push to $(dockerhub-image)"
+	@echo "  release-dry  release-version=3.0.0       # multi-arch build, no push"
 	@echo ""
 	@echo "Backup / restore / verify / copy"
 	@echo "  Shared vars: backup-file-name=, compression=(NONE|GZ|ZSTD), parity=,"
@@ -166,7 +166,7 @@ buildx-rm:
 	docker buildx rm dvm-builder || echo "Builder not present, nothing to remove."
 
 # Build + push the multi-arch image to Docker Hub, tagged with the release
-# version and `latest`. Example: make release release-version=2.0.0
+# version and `latest`. Example: make release release-version=3.0.0
 release: buildx-create
 	docker buildx build --target runtime $(build-args) \
 		--platform $(platforms) \

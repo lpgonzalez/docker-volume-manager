@@ -35,7 +35,7 @@ logger = logging.getLogger("dvm")
 
 DEFAULT_SOCKET = "/var/run/docker.sock"
 SELF_IMAGE_ENV = "DVM_HELPER_IMAGE"
-FALLBACK_IMAGE = "docker_volume_manager:2.0"
+FALLBACK_IMAGE = "docker_volume_manager:3.0"
 
 
 class DockerError(RuntimeError):
