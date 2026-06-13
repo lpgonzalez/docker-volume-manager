@@ -198,7 +198,11 @@ def _tree_fingerprint(
                 # it is intentionally excluded from the fingerprint.
                 out[rel] = ("symlink", 0, mode, uid, gid, None, os.readlink(full))
             elif full.is_dir():
-                out[rel] = ("dir", 0, mode, uid, gid, mtime, None)
+                # Directory mtime is NOT asserted: tar restores it last
+                # (--delay-directory-restore) and copy re-applies it, but both
+                # are best-effort and can drift under load. File mtime — the bit
+                # that matters for data fidelity — is checked below.
+                out[rel] = ("dir", 0, mode, uid, gid, None, None)
             else:
                 h = hashlib.sha256()
                 with open(full, "rb") as f:

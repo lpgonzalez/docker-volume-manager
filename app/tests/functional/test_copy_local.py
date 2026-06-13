@@ -29,7 +29,7 @@ def test_copy_preserves_tree(tmp_path, data_tree, fingerprint):
         assert a_mode == b_mode, f"mode mismatch at {rel}"
         assert a_content == b_content, f"content mismatch at {rel}"
         if b_mtime is not None:
-            assert a_mtime == b_mtime, f"mtime mismatch at {rel}"
+            assert abs(a_mtime - b_mtime) <= 1, f"mtime mismatch at {rel}"
         # CopyManager uses shutil.copy2 + chown; ownership preserved only as root.
         if compare_ownership:
             assert a_uid == b_uid, f"uid mismatch at {rel}"

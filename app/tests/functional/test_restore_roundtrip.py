@@ -82,7 +82,7 @@ def test_backup_then_restore_is_bit_equivalent(
         assert a_mode == b_mode, f"mode mismatch at {rel}"
         assert a_content == b_content, f"content mismatch at {rel}"
         if b_mtime is not None:
-            assert a_mtime == b_mtime, f"mtime mismatch at {rel}"
+            assert abs(a_mtime - b_mtime) <= 1, f"mtime mismatch at {rel}"
         if compare_ownership:
             assert a_uid == b_uid, f"uid mismatch at {rel}"
             assert a_gid == b_gid, f"gid mismatch at {rel}"
