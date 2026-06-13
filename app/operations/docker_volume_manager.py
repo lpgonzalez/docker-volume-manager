@@ -267,28 +267,24 @@ class Docker_Volume_Manager:
                 return False
 
             output_dir = getattr(self.config, "OUTPUT_PATH", ".")
-            candidates = []
+            # Locate the actual archive with the SAME logic restore uses: backups
+            # live at <output>/<name>/<timestamp>/<name>.<ext>, not directly under
+            # <output>. (Previously verify treated <output>/<name> — a directory —
+            # as the archive file, so it never found a real backup.)
+            from operations.restore_files import (
+                _find_archive_in_ts_dir,
+                _find_backup_base,
+                _select_timestamp_dir,
+            )
+
+            timestamp = getattr(self.config, "TIMESTAMP", None) or None
             try:
-                for entry in os.listdir(output_dir):
-                    if entry.startswith(backup_basename):
-                        candidates.append(os.path.join(output_dir, entry))
-            except FileNotFoundError:
-                self.logger.error("Output directory not found: %s", output_dir)
+                base_dir = _find_backup_base(output_dir, backup_basename)
+                ts_dir = _select_timestamp_dir(base_dir, timestamp)
+                backup_path, _encrypted = _find_archive_in_ts_dir(ts_dir)
+            except FileNotFoundError as exc:
+                self.logger.error("No backup found to verify: %s", exc)
                 return False
-            except Exception:
-                self.logger.exception("Error while listing output directory")
-                return False
-
-            if not candidates:
-                self.logger.error(
-                    "No backup files found with base name %s in %s",
-                    backup_basename,
-                    output_dir,
-                )
-                return False
-
-            candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-            backup_path = candidates[0]
             self.logger.info("Selected backup for verification: %s", backup_path)
 
             password = getattr(self.config, "ENCRYPTION_KEY", "") or ""
@@ -299,27 +295,32 @@ class Docker_Volume_Manager:
             for key, value in report.items():
                 self.logger.info("verify.%s = %s", key, value)
 
+            healthy = True
             if not report.get("backup_exists", False):
                 self.logger.error("Backup file does not exist: %s", backup_path)
+                healthy = False
             if report.get("is_encrypted") and not report.get("can_decrypt", True):
                 self.logger.error(
                     "Backup is encrypted but cannot be decrypted with provided key."
                 )
+                healthy = False
             if not report.get("can_decompress", True):
                 self.logger.error("Backup cannot be decompressed.")
+                healthy = False
             if report.get("parity_files_exist", False):
                 if not report.get("parity_valid", True):
                     if report.get("parity_recovered", False):
                         self.logger.warning("Parity invalid but recovery succeeded.")
                     else:
                         self.logger.error("Parity invalid and recovery failed.")
+                        healthy = False
                 else:
                     self.logger.info("Parity files present and valid.")
             else:
                 self.logger.info("No parity files present for this backup.")
 
-            self.logger.info("Verification completed")
-            return True
+            self.logger.info("Verification completed (healthy=%s)", healthy)
+            return healthy
         except Exception:
             self.logger.exception("Backup verification failed unexpectedly")
             return False
