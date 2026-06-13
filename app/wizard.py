@@ -224,12 +224,22 @@ def _wizard_run_backup() -> None:
 
 
 def _wizard_run_restore() -> None:
+    console.print(
+        "[dim]Restore reads a backup from a [bold]source[/] directory and writes its "
+        "contents into a separate [bold]destination[/]. The source is where the backup "
+        "lives — the dir that contains [bold]<name>/<timestamp>/…[/] (e.g. the dir you "
+        "backed up to). Source and destination must differ.[/]"
+    )
     name = Prompt.ask("Backup base name")
     input_path, input_volume = _wizard_path_or_volume(
-        "Backup directory", "/app/input_dir", purpose="backup source"
+        "Backup source dir (holds <name>/<timestamp>/)",
+        "/app/input_dir",
+        purpose="backup source (where the backup is stored)",
     )
     output_path, output_volume = _wizard_path_or_volume(
-        "Restore destination", "/app/output_dir", purpose="restore target"
+        "Restore destination dir (where files are written)",
+        "/app/output_dir",
+        purpose="restore destination",
     )
     timestamp = Prompt.ask("Timestamp (blank = latest)", default="") or None
     encrypted = Confirm.ask("Is the backup encrypted?", default=False)
