@@ -15,7 +15,7 @@ import wizard
 
 
 class _FakeStore:
-    label = "/app/store"
+    label = "/dvm/store"
 
     def is_writable(self):
         return True
@@ -32,7 +32,7 @@ def test_wizard_backup_passes_collected_values_to_runner(monkeypatch):
     monkeypatch.setattr(
         wizard,
         "_wizard_location",
-        lambda *a, **k: ("/app/input_dir", None, _FakeStore()),
+        lambda *a, **k: ("/dvm/source", None, _FakeStore()),
     )
     monkeypatch.setattr(wizard, "_wizard_new_backup_name", lambda store: "myvol")
     _patch_common(monkeypatch)
@@ -58,7 +58,7 @@ def test_wizard_verify_plumbs_name_and_timestamp(monkeypatch):
     monkeypatch.setattr(
         wizard,
         "_wizard_location",
-        lambda *a, **k: ("/app/output_dir", None, _FakeStore()),
+        lambda *a, **k: ("/dvm/dest", None, _FakeStore()),
     )
     monkeypatch.setattr(
         wizard, "_wizard_pick_existing_backup", lambda store: ("yadee", "20260613_2210")
@@ -79,7 +79,7 @@ def test_wizard_verify_aborts_when_no_backup_selected(monkeypatch):
     monkeypatch.setattr(
         wizard,
         "_wizard_location",
-        lambda *a, **k: ("/app/output_dir", None, _FakeStore()),
+        lambda *a, **k: ("/dvm/dest", None, _FakeStore()),
     )
     monkeypatch.setattr(
         wizard, "_wizard_pick_existing_backup", lambda store: (None, None)
@@ -95,7 +95,7 @@ def test_wizard_restore_plumbs_name_and_timestamp(monkeypatch):
     monkeypatch.setattr(
         wizard,
         "_wizard_location",
-        lambda *a, **k: ("/app/input_dir", None, _FakeStore()),
+        lambda *a, **k: ("/dvm/source", None, _FakeStore()),
     )
     monkeypatch.setattr(
         wizard, "_wizard_pick_existing_backup", lambda store: ("yadee", "20260613_2210")

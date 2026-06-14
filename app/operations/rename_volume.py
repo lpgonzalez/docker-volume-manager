@@ -197,8 +197,8 @@ def _copy_contents(client: DockerClient, source: str, target: str) -> None:
     exit_code = client.run_helper_streaming(
         command=["python", "main.py", "copy"],
         volume_mounts={
-            source: {"bind": "/app/input_dir", "mode": "ro"},
-            target: {"bind": "/app/output_dir", "mode": "rw"},
+            source: {"bind": "/dvm/source", "mode": "ro"},
+            target: {"bind": "/dvm/dest", "mode": "rw"},
         },
         env={
             "OPERATION": "COPY",

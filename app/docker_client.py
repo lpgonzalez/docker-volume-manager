@@ -329,7 +329,7 @@ class DockerClient:
 
         Used by :func:`cli._pivot_if_volumes` to execute volume-aware
         operations in a fresh container with the requested Docker volumes
-        mounted at ``/app/input_dir`` / ``/app/output_dir``.
+        mounted at ``/dvm/source`` / ``/dvm/dest``.
 
         Parameters
         ----------
@@ -343,7 +343,7 @@ class DockerClient:
             ``PYTHONUNBUFFERED=1`` are always set.
         inherit_bind_mounts:
             When True, replicate the outer container's bind mounts so the
-            helper inherits e.g. ``/app/output_dir`` from the host bind when
+            helper inherits e.g. ``/dvm/dest`` from the host bind when
             only ``--input-volume`` was specified.
         tty:
             Allocate a pty for the helper. Default False so log streaming

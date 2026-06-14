@@ -94,6 +94,10 @@ RUN apk add --no-cache \
 COPY --from=builder /install /usr/local
 COPY app /app
 
+# Default in-container mount points for source/destination (override via bind
+# mounts, the helper-pivot for volumes, or --input-host/--output-host).
+RUN mkdir -p /dvm/source /dvm/dest
+
 ENV PYTHONPATH=/app
 
 # Healthcheck for container orchestration (only for runtime)

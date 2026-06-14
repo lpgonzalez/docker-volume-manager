@@ -56,9 +56,11 @@ log-output       = console,file,json_file
 
 # Reusable fragments
 tz-mounts        = -v /etc/timezone:/etc/timezone:ro -v /etc/localtime:/etc/localtime:ro
-io-mounts        = -v "$(in-dir):/app/input_dir" -v "$(out-dir):/app/output_dir" -v "$(logs-dir):/app/logs"
+io-mounts        = -v "$(in-dir):/dvm/source" -v "$(out-dir):/dvm/dest" -v "$(logs-dir):/app/logs"
 docker-socket    = -v /var/run/docker.sock:/var/run/docker.sock
 common-env       = -e TZ=$(tz) -e LOG_LEVEL=$(log-level) -e LOG_OUTPUT=$(log-output)
+# Host paths the container can't auto-discover; seed the wizard's host browser.
+host-env         = -e DVM_HOST_PWD="$(PWD)" -e DVM_HOST_HOME="$(HOME)"
 
 # Conditional fragments driven by make-variable presence
 volume-args      = $(if $(input-volume),--input-volume $(input-volume),) $(if $(output-volume),--output-volume $(output-volume),)
@@ -325,7 +327,7 @@ run-rename:
 
 run-interactive: clean
 	docker run --rm -it --name=$(container) \
-		$(tz-mounts) $(io-mounts) $(common-env) $(docker-socket) \
+		$(tz-mounts) $(io-mounts) $(common-env) $(host-env) $(docker-socket) \
 		$(image-name):$(image-version) \
 		python main.py interactive
 

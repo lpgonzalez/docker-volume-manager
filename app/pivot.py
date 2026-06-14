@@ -4,8 +4,8 @@ SPDX-License-Identifier: Apache-2.0
 
 Helper-container pivot. When an operation is given ``--input-volume`` /
 ``--output-volume``, it can't touch the Docker volume directly; instead it spawns
-a sibling "helper" container with the volume(s) mounted at /app/input_dir and
-/app/output_dir, streams that container's logs, and exits with its status code.
+a sibling "helper" container with the volume(s) mounted at /dvm/source and
+/dvm/dest, streams that container's logs, and exits with its status code.
 """
 
 from __future__ import annotations
@@ -77,11 +77,11 @@ def _pivot_if_volumes(
     volume_mounts: dict[str, dict[str, str]] = {}
     helper_env: dict[str, Any] = {k: v for k, v in env.items() if v is not None}
     if input_volume:
-        volume_mounts[input_volume] = {"bind": "/app/input_dir", "mode": input_mode}
-        helper_env["INPUT_PATH"] = "/app/input_dir"
+        volume_mounts[input_volume] = {"bind": "/dvm/source", "mode": input_mode}
+        helper_env["INPUT_PATH"] = "/dvm/source"
     if output_volume:
-        volume_mounts[output_volume] = {"bind": "/app/output_dir", "mode": output_mode}
-        helper_env["OUTPUT_PATH"] = "/app/output_dir"
+        volume_mounts[output_volume] = {"bind": "/dvm/dest", "mode": output_mode}
+        helper_env["OUTPUT_PATH"] = "/dvm/dest"
 
     # Scrub volume flags so the helper doesn't loop trying to pivot again.
     helper_env.pop("INPUT_VOLUME", None)

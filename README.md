@@ -63,8 +63,8 @@ echo "hello" > in_dir/test.txt
 
 # Backup ./in_dir → ./out_dir as a ZSTD archive
 docker run --rm \
-  -v "$PWD/in_dir:/app/input_dir" \
-  -v "$PWD/out_dir:/app/output_dir" \
+  -v "$PWD/in_dir:/dvm/source" \
+  -v "$PWD/out_dir:/dvm/dest" \
   -v "$PWD/logs:/app/logs" \
   lpgonzalez/docker-volume-manager \
   python main.py backup -n demo -c ZSTD -p 30
@@ -72,8 +72,8 @@ docker run --rm \
 # Interactive wizard (needs a TTY and, for volume ops, the Docker socket)
 docker run --rm -it \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$PWD/in_dir:/app/input_dir" \
-  -v "$PWD/out_dir:/app/output_dir" \
+  -v "$PWD/in_dir:/dvm/source" \
+  -v "$PWD/out_dir:/dvm/dest" \
   lpgonzalez/docker-volume-manager \
   python main.py interactive
 ```
@@ -95,8 +95,8 @@ Direct CLI against the locally-built image:
 
 ```bash
 docker run --rm \
-  -v "$PWD/in_dir:/app/input_dir" \
-  -v "$PWD/out_dir:/app/output_dir" \
+  -v "$PWD/in_dir:/dvm/source" \
+  -v "$PWD/out_dir:/dvm/dest" \
   -v "$PWD/logs:/app/logs" \
   docker_volume_manager:3.0 \
   python main.py backup -n demo -c ZSTD -p 30 -k 'sup3rs3cr3t'
@@ -118,11 +118,11 @@ Required:
   -n, --name TEXT             Backup base name. (Env: BACKUP_FILE_NAME)
 
 Source:
-  -i, --input PATH            Source dir inside container (default /app/input_dir).
+  -i, --input PATH            Source dir inside container (default /dvm/source).
       --input-volume NAME     Source is a Docker volume (pivots to helper).
 
 Destination:
-  -o, --output PATH           Destination dir inside container (default /app/output_dir).
+  -o, --output PATH           Destination dir inside container (default /dvm/dest).
       --output-volume NAME    Destination is a Docker volume (pivots to helper).
 
 Compression:
@@ -160,8 +160,8 @@ dvm backup -n confidential -K ./alice.asc
 # Symmetric encryption + 30% parity + detached signature
 docker run --rm \
   -v ~/.gnupg:/root/.gnupg:ro \
-  -v $PWD/in:/app/input_dir \
-  -v $PWD/out:/app/output_dir \
+  -v $PWD/in:/dvm/source \
+  -v $PWD/out:/dvm/dest \
   docker_volume_manager:3.0 \
   python main.py backup \
     -n release-2026-Q1 -c ZSTD -p 30 \
@@ -241,13 +241,13 @@ Mirror with metadata preservation. Supports all four direction combinations:
 
 ```bash
 # dir → dir (no Docker SDK needed)
-dvm copy -i /app/input_dir -o /app/output_dir
+dvm copy -i /dvm/source -o /dvm/dest
 
 # dir → volume (helper pivot)
 dvm copy --output-volume mybak
 
 # volume → dir
-dvm copy --input-volume mydata -o /app/output_dir
+dvm copy --input-volume mydata -o /dvm/dest
 
 # volume → volume (often used for migrations)
 dvm copy --input-volume olddata --output-volume newdata
@@ -291,8 +291,8 @@ make run-interactive
 # or
 docker run --rm -it \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v $PWD/in_dir:/app/input_dir \
-  -v $PWD/out_dir:/app/output_dir \
+  -v $PWD/in_dir:/dvm/source \
+  -v $PWD/out_dir:/dvm/dest \
   docker_volume_manager:3.0 \
   python main.py interactive
 ```
@@ -312,7 +312,7 @@ Volume contents are enumerated by spawning a short-lived helper container.
 **TAB completion** is available at the prompts (powered by the stdlib
 `readline`, so run with `-it`): operation and action names, compression /
 encryption / log-level choices, log outputs, **filesystem paths** (e.g.
-`/app/ou`↹ → `/app/output_dir/`), existing **backup base names**, and **Docker
+`/dvm/d`↹ → `/dvm/dest/`), existing **backup base names**, and **Docker
 volume names**. It degrades silently if `readline` isn't available.
 
 ---
@@ -431,8 +431,8 @@ you pass `--input-volume` or `--output-volume`:
 1. The outer container detects the volume flag.
 2. Validates: socket reachable, volume exists, not already inside a helper.
 3. Spawns a helper container running the same operation, with:
-   - The named Docker volume mounted at `/app/input_dir` or `/app/output_dir`.
-   - Bind mounts inherited from the outer container (so e.g. `/app/output_dir` from a host bind-mount is preserved when only `--input-volume` is set).
+   - The named Docker volume mounted at `/dvm/source` or `/dvm/dest`.
+   - Bind mounts inherited from the outer container (so e.g. `/dvm/dest` from a host bind-mount is preserved when only `--input-volume` is set).
    - `DVM_HELPER_MODE=1` to prevent recursion.
 4. Streams the helper's logs to the outer process's stderr.
 5. Exits with the helper's status code.
@@ -585,7 +585,7 @@ flowchart LR
     D -- yes --> E[Refuse: nested helper]
     D -- no --> F[validate volumes,<br/>build helper env]
     F --> G[run_helper_streaming]
-    G --> H[New DVM container,<br/>volumes mounted at<br/>/app/input_dir, /app/output_dir]
+    G --> H[New DVM container,<br/>volumes mounted at<br/>/dvm/source, /dvm/dest]
     H --> I[helper:<br/>python main.py SUBCMD]
     I --> C
     C --> J[Docker_Volume_Manager.run]
@@ -609,7 +609,7 @@ sequenceDiagram
     User->>Outer: docker run dvm backup --input-volume foo<br/>--output-volume bar -n my-bk
     Outer->>Outer: typer parses CLI flags
     Outer->>Daemon: ping and verify volumes exist
-    Outer->>Daemon: spawn helper with foo at /app/input_dir<br/>and bar at /app/output_dir<br/>plus DVM_HELPER_MODE=1
+    Outer->>Daemon: spawn helper with foo at /dvm/source<br/>and bar at /dvm/dest<br/>plus DVM_HELPER_MODE=1
     activate Helper
     Daemon-->>Outer: helper container ID
     Outer->>Daemon: stream helper logs

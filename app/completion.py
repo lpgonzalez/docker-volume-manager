@@ -17,7 +17,7 @@ Usage::
     from completion import ask, words, paths
 
     op = ask("Select operation", words(["backup", "restore"]), choices=[...])
-    src = ask("Source path", paths(), default="/app/input_dir")
+    src = ask("Source path", paths(), default="/dvm/source")
 """
 
 from __future__ import annotations

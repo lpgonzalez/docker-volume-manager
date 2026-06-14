@@ -68,8 +68,8 @@ class TestRenameHappyPath:
         call = client.run_helper_streaming.call_args
         assert call.kwargs["command"] == ["python", "main.py", "copy"]
         mounts = call.kwargs["volume_mounts"]
-        assert mounts["src"] == {"bind": "/app/input_dir", "mode": "ro"}
-        assert mounts["dst"] == {"bind": "/app/output_dir", "mode": "rw"}
+        assert mounts["src"] == {"bind": "/dvm/source", "mode": "ro"}
+        assert mounts["dst"] == {"bind": "/dvm/dest", "mode": "rw"}
 
         client.remove_volume.assert_called_once_with("src", force=False)
         assert result.source == "src"

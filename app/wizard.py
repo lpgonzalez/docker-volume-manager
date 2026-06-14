@@ -263,11 +263,11 @@ def _wizard_encryption_choice() -> tuple[str | None, list[str]]:
 
 def _wizard_run_backup() -> None:
     input_path, input_volume, _ = _wizard_location(
-        "Source path (the data to back up)", "/app/input_dir", purpose="source"
+        "Source path (the data to back up)", "/dvm/source", purpose="source"
     )
     output_path, output_volume, dest_store = _wizard_location(
         "Destination path (where the backup is written)",
-        "/app/output_dir",
+        "/dvm/dest",
         purpose="destination",
     )
     if not dest_store.is_writable():
@@ -316,7 +316,7 @@ def _wizard_run_restore() -> None:
     )
     input_path, input_volume, src_store = _wizard_location(
         "Backup source dir (holds <name>/<timestamp>/)",
-        "/app/input_dir",
+        "/dvm/dest",
         purpose="backup source (where the backup is stored)",
     )
     name, timestamp = _wizard_pick_existing_backup(src_store)
@@ -324,7 +324,7 @@ def _wizard_run_restore() -> None:
         return
     output_path, output_volume, _ = _wizard_location(
         "Restore destination dir (where files are written)",
-        "/app/output_dir",
+        "/dvm/source",
         purpose="restore destination",
     )
     encrypted = Confirm.ask("Is the backup encrypted?", default=False)
@@ -357,7 +357,7 @@ def _wizard_run_restore() -> None:
 
 def _wizard_run_verify() -> None:
     output_path, output_volume, store = _wizard_location(
-        "Backup directory", "/app/output_dir", purpose="backup location"
+        "Backup directory", "/dvm/dest", purpose="backup location"
     )
     name, timestamp = _wizard_pick_existing_backup(store)
     if name is None:
@@ -384,10 +384,10 @@ def _wizard_run_verify() -> None:
 
 def _wizard_run_copy() -> None:
     input_path, input_volume, _ = _wizard_location(
-        "Source path", "/app/input_dir", purpose="source"
+        "Source path", "/dvm/source", purpose="source"
     )
     output_path, output_volume, dest_store = _wizard_location(
-        "Destination path", "/app/output_dir", purpose="destination"
+        "Destination path", "/dvm/dest", purpose="destination"
     )
     if not dest_store.is_writable():
         err_console.print(

@@ -73,7 +73,7 @@ def backup(
         ..., "--name", "-n", envvar="BACKUP_FILE_NAME", help="Backup base name."
     ),
     input_path: str = typer.Option(
-        "/app/input_dir",
+        "/dvm/source",
         "--input",
         "-i",
         envvar="INPUT_PATH",
@@ -86,7 +86,7 @@ def backup(
         help="Read source from a Docker volume (pivots to a helper container).",
     ),
     output_path: str = typer.Option(
-        "/app/output_dir",
+        "/dvm/dest",
         "--output",
         "-o",
         envvar="OUTPUT_PATH",
@@ -230,11 +230,12 @@ def restore(
         help="Backup base name to restore.",
     ),
     input_path: str = typer.Option(
-        "/app/input_dir",
+        "/dvm/dest",
         "--input",
         "-i",
         envvar="INPUT_PATH",
-        help="Directory containing the timestamped backup subdirectories.",
+        help="Directory containing the timestamped backup subdirectories "
+        "(where backups live; defaults to the backup destination).",
     ),
     input_volume: str | None = typer.Option(
         None,
@@ -243,7 +244,7 @@ def restore(
         help="Read backup from a Docker volume (pivots to a helper; mounted rw for par2 repair).",
     ),
     output_path: str = typer.Option(
-        "/app/output_dir",
+        "/dvm/source",
         "--output",
         "-o",
         envvar="OUTPUT_PATH",
@@ -301,7 +302,7 @@ def verify(
         help="Backup base name to verify.",
     ),
     output_path: str = typer.Option(
-        "/app/output_dir",
+        "/dvm/dest",
         "--output",
         "-o",
         envvar="OUTPUT_PATH",
@@ -357,9 +358,7 @@ def verify(
 
 @app.command("copy")
 def copy(
-    input_path: str = typer.Option(
-        "/app/input_dir", "--input", "-i", envvar="INPUT_PATH"
-    ),
+    input_path: str = typer.Option("/dvm/source", "--input", "-i", envvar="INPUT_PATH"),
     input_volume: str | None = typer.Option(
         None,
         "--input-volume",
@@ -367,7 +366,7 @@ def copy(
         help="Source is a Docker volume (pivots to a helper container).",
     ),
     output_path: str = typer.Option(
-        "/app/output_dir", "--output", "-o", envvar="OUTPUT_PATH"
+        "/dvm/dest", "--output", "-o", envvar="OUTPUT_PATH"
     ),
     output_volume: str | None = typer.Option(
         None,

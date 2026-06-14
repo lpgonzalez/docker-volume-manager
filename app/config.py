@@ -100,8 +100,9 @@ class Config:
         Base name used to build the timestamped output directory and archive
         filename. Required for everything except COPY and RENAME.
     INPUT_PATH, OUTPUT_PATH:
-        Container-side paths. Default to /app/input_dir and /app/output_dir;
-        override via bind mounts or via the helper-pivot when volumes are used.
+        Container-side paths. Default to /dvm/source and /dvm/dest;
+        override via bind mounts or via the helper-pivot when volumes/host
+        paths are used.
     COMPRESSION:
         NONE | GZ | ZSTD. ZSTD is the default and runs at level 19 with all
         cores. GZ uses pigz when available, falling back to gzip.
@@ -131,8 +132,8 @@ class Config:
 
     OPERATION: str = "BACKUP"
     BACKUP_FILE_NAME: str = ""
-    INPUT_PATH: str = "/app/input_dir"
-    OUTPUT_PATH: str = "/app/output_dir"
+    INPUT_PATH: str = "/dvm/source"
+    OUTPUT_PATH: str = "/dvm/dest"
     COMPRESSION: str = "ZSTD"
     PARITY: int = 0
     ENCRYPTION_KEY: str = ""
@@ -242,8 +243,8 @@ class Config:
         return cls(
             OPERATION=pick("OPERATION", "BACKUP"),
             BACKUP_FILE_NAME=pick("BACKUP_FILE_NAME", ""),
-            INPUT_PATH=pick("INPUT_PATH", "/app/input_dir"),
-            OUTPUT_PATH=pick("OUTPUT_PATH", "/app/output_dir"),
+            INPUT_PATH=pick("INPUT_PATH", "/dvm/source"),
+            OUTPUT_PATH=pick("OUTPUT_PATH", "/dvm/dest"),
             COMPRESSION=pick("COMPRESSION", "ZSTD"),
             PARITY=pick("PARITY", 0),
             ENCRYPTION_KEY=pick("ENCRYPTION_KEY", ""),
