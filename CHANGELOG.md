@@ -4,6 +4,24 @@ All notable changes to Docker Volume Manager.
 
 The project follows a [pragmatic, single-developer cadence](https://keepachangelog.com/en/1.1.0/). Releases are tagged as `vMAJOR.MINOR.PATCH`; pushing a tag publishes the multi-arch image to Docker Hub.
 
+## [4.0.0] — 2026-06-14 — Source/destination = volume, host path, or mounted dir (breaking)
+
+### Added
+- **Host-path source/destination**: `--input-host` / `--output-host` (envvars `INPUT_HOST` / `OUTPUT_HOST`) on backup/restore/copy, and `--output-host` on verify. An operation's source or destination can now be an **absolute host directory**, bind-mounted into a helper container by the daemon at run time. Combined with `--input-volume` / `--output-volume`, you can run **socket-only** (no `-v` for the data) — e.g. back up a volume straight to a host directory. `--*-volume` and `--*-host` are mutually exclusive per side; host paths must be absolute.
+- **Interactive wizard: location-kind picker.** Each location is chosen as *local* / *volume* / *host* first, then the wizard lists what's there. For host paths it **browses the host filesystem** via helper `find`, seeded from `DVM_HOST_PWD` (passed by `make run-interactive`), with a security confirmation.
+- `make run-interactive` now passes `DVM_HOST_PWD` / `DVM_HOST_HOME` so the host browser has a starting point.
+
+### Changed (breaking)
+- **In-container mount points moved out of `/app`**: the default source/destination are now **`/dvm/source`** and **`/dvm/dest`** (was `/app/input_dir` / `/app/output_dir`). The env-var *names* (`INPUT_PATH` / `OUTPUT_PATH`) are unchanged — only their defaults moved. Runs that bind-mounted at `/app/input_dir` / `/app/output_dir` must switch to `/dvm/source` / `/dvm/dest` (or pass explicit `-i` / `-o`). The `make run-*` workflow is unaffected (its mounts moved with the defaults).
+- **Restore defaults fixed and made symmetric with backup**: restore now reads the backup from `/dvm/dest` (where backup writes) and restores into `/dvm/source`, instead of defaulting the backup *source* to the data-input dir — which produced a spurious "No backups found" in the wizard.
+- The helper pivot generalized from volume-only to any *remote* side (`_pivot_if_volumes` → `_pivot_if_remote`); the backup-store abstraction unified into `RemoteStore` (one code path for volumes and host paths).
+
+### Security
+- Mounting a host path through the Docker socket grants the helper root-level access to that path on the host. The wizard warns and confirms before accepting one; scripted runs print a one-line notice. Treat socket access as host-equivalent.
+
+### Image metadata
+- The publish workflow now pins the curated OCI `description` / `url` and surfaces `authors` / `vendor` / `documentation`, so the published image's label set matches the Dockerfile instead of the auto-generated GitHub values.
+
 ## [3.1.0] — 2026-06-14 — Honest verify, typed exit codes, redesigned wizard
 
 ### Added

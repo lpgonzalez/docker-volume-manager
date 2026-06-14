@@ -22,7 +22,7 @@
 ##############################################################################
 
 image-name       = docker_volume_manager
-image-version    = 3.1
+image-version    = 4.0
 container        = docker-volume-manager
 
 # Public release (Docker Hub). Override docker-user / release-version as needed.
