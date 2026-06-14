@@ -322,3 +322,45 @@ class TestDockerUnavailable:
         monkeypatch.setattr(DockerClient, "ping", lambda self: False)
         result = cli_runner.invoke(cli.app, ["rename", "a", "b"])
         assert result.exit_code == cli.EXIT_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# host-path flags (--input-host / --output-host)
+# ---------------------------------------------------------------------------
+
+
+class TestHostFlags:
+    def test_volume_and_host_mutually_exclusive(self, cli_runner, clean_env):
+        result = cli_runner.invoke(
+            cli.app,
+            ["backup", "-n", "x", "--input-volume", "v", "--input-host", "/h"],
+        )
+        assert result.exit_code == cli.EXIT_VALIDATION
+
+    def test_relative_host_rejected(self, cli_runner, clean_env):
+        result = cli_runner.invoke(
+            cli.app, ["backup", "-n", "x", "--input-host", "relative/dir"]
+        )
+        assert result.exit_code == cli.EXIT_VALIDATION
+
+    def test_input_host_forwarded_to_runner(self, cli_runner, clean_env):
+        with patch.object(cli, "_run_backup") as m:
+            result = cli_runner.invoke(
+                cli.app, ["backup", "-n", "x", "--input-host", "/host/in"]
+            )
+        assert result.exit_code == 0
+        assert m.call_args.kwargs["input_host"] == "/host/in"
+        assert m.call_args.kwargs["output_host"] is None
+
+    def test_output_host_envvar_fallback(self, cli_runner, clean_env, monkeypatch):
+        monkeypatch.setenv("OUTPUT_HOST", "/host/out")
+        with patch.object(cli, "_run_backup") as m:
+            result = cli_runner.invoke(cli.app, ["backup", "-n", "x"])
+        assert result.exit_code == 0
+        assert m.call_args.kwargs["output_host"] == "/host/out"
+
+    def test_verify_has_output_host_only(self, cli_runner, clean_env):
+        # verify keeps its single-location shape: --output-host yes, no --input-host.
+        help_text = cli_runner.invoke(cli.app, ["verify", "--help"]).output
+        assert "--output-host" in help_text
+        assert "--input-host" not in help_text

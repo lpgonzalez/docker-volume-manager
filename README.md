@@ -423,23 +423,47 @@ archives during `restore` and `verify` when parity is present.
 
 ---
 
-## Docker volume integration
+## Source & destination: volume, host path, or mounted dir
 
-DVM can read/write Docker volumes directly without manual `-v` mounts. When
-you pass `--input-volume` or `--output-volume`:
+Every operation has a **source** and a **destination**; each can be one of three
+kinds, set independently per side:
 
-1. The outer container detects the volume flag.
-2. Validates: socket reachable, volume exists, not already inside a helper.
-3. Spawns a helper container running the same operation, with:
-   - The named Docker volume mounted at `/dvm/source` or `/dvm/dest`.
-   - Bind mounts inherited from the outer container (so e.g. `/dvm/dest` from a host bind-mount is preserved when only `--input-volume` is set).
-   - `DVM_HELPER_MODE=1` to prevent recursion.
-4. Streams the helper's logs to the outer process's stderr.
-5. Exits with the helper's status code.
+| Kind | Flags | Mounted as | Needs socket |
+|---|---|:--:|:--:|
+| **Mounted dir** (fallback) | `-i/--input`, `-o/--output` | you bind-mount it yourself | no |
+| **Docker volume** | `--input-volume`, `--output-volume` | helper mounts the volume | yes |
+| **Host path** | `--input-host`, `--output-host` | helper bind-mounts the host path | yes |
 
-Requires `-v /var/run/docker.sock:/var/run/docker.sock` on the outer run. The
-Makefile targets that need the socket already do this (`run-interactive`,
-`run-volumes-*`, anything passing `input-volume=`/`output-volume=`).
+The first is the classic, socket-less mode (`-v ./out:/dvm/dest`). The other two
+are **socket-driven**: with only `-v /var/run/docker.sock:/var/run/docker.sock`
+mounted, DVM spawns a helper container that mounts whatever you named at
+`/dvm/source` / `/dvm/dest`, runs the operation there, streams its logs back and
+exits with its status code (`DVM_HELPER_MODE=1` prevents recursion). So you can
+back up a volume straight to a host directory — no host bind mounts on the outer
+container:
+
+```bash
+# Volume → host directory, socket only (no -v for the data)
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  lpgonzalez/docker-volume-manager \
+  python main.py backup -n nightly --input-volume pgdata --output-host /srv/backups
+
+# Restore that backup from the host directory into a fresh volume
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  lpgonzalez/docker-volume-manager \
+  python main.py restore -n nightly --input-host /srv/backups --output-volume pgdata_restored
+```
+
+`--*-volume` and `--*-host` are mutually exclusive per side; a host path must be
+absolute. The **interactive wizard** asks the location *kind* first (volume /
+host / local), then lists what's there — for host paths it browses the host
+filesystem via helper containers, seeded from `DVM_HOST_PWD` (pass
+`-e DVM_HOST_PWD="$PWD"`, as `make run-interactive` does).
+
+> **Security:** mounting a host path through the Docker socket gives the helper
+> root-level access to that path on the host. The wizard warns and confirms
+> before accepting one; scripted runs print a one-line notice. Only use paths
+> you trust, and treat socket access as host-equivalent.
 
 ---
 

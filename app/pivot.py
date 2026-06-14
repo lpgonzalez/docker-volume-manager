@@ -2,10 +2,13 @@
 Copyright 2025-2026 Lisardo Prieto <me@lisardoprieto.com>
 SPDX-License-Identifier: Apache-2.0
 
-Helper-container pivot. When an operation is given ``--input-volume`` /
-``--output-volume``, it can't touch the Docker volume directly; instead it spawns
-a sibling "helper" container with the volume(s) mounted at /dvm/source and
-/dvm/dest, streams that container's logs, and exits with its status code.
+Helper-container pivot. When an operation's source/destination is "remote" — a
+``--input-volume`` / ``--output-volume`` (Docker volume) or a ``--input-host`` /
+``--output-host`` (absolute host path) — the main process can't touch it
+directly; instead it spawns a sibling "helper" container with the source/dest
+mounted at /dvm/source and /dvm/dest, streams that container's logs, and exits
+with its status code. A bare directly-mounted path (the socket-less fallback) is
+not remote and runs in-process.
 """
 
 from __future__ import annotations
@@ -26,28 +29,69 @@ from cli_shared import (
 from docker_client import DockerClient, DockerError
 
 
-def _pivot_if_volumes(
+class _Side:
+    """Resolved source/destination side. ``mount_key`` is the volume name or the
+    absolute host path (None for a local, in-process path)."""
+
+    def __init__(self, kind: str, mount_key: str | None):
+        self.kind = kind  # "local" | "volume" | "host"
+        self.mount_key = mount_key
+        self.is_remote = kind in ("volume", "host")
+
+
+def _resolve_side(label: str, volume: str | None, host: str | None) -> _Side:
+    """Map a side's (volume, host) flags to a :class:`_Side`.
+
+    ``--*-volume`` and ``--*-host`` are mutually exclusive; a host path must be
+    absolute (docker-py would treat a relative key as a volume name). When
+    neither is set the side is local (handled in-process by the caller).
+    """
+    if volume and host:
+        err_console.print(
+            f"[bold red]--{label}-volume and --{label}-host are mutually "
+            "exclusive — pick one.[/]"
+        )
+        raise typer.Exit(EXIT_VALIDATION)
+    if volume:
+        return _Side("volume", volume)
+    if host:
+        if not os.path.isabs(host):
+            err_console.print(
+                f"[bold red]--{label}-host must be an absolute path[/] (got "
+                f"{host!r}); a relative path would be treated as a volume name."
+            )
+            raise typer.Exit(EXIT_VALIDATION)
+        return _Side("host", host)
+    return _Side("local", None)
+
+
+def _pivot_if_remote(
     subcommand: str,
     env: dict[str, Any],
     *,
-    input_volume: str | None,
-    output_volume: str | None,
+    input_volume: str | None = None,
+    input_host: str | None = None,
+    output_volume: str | None = None,
+    output_host: str | None = None,
     input_mode: str = "ro",
     output_mode: str = "rw",
 ) -> None:
     """
-    If a volume flag is set and we're not already inside a helper, spawn a
-    helper container with the volume(s) mounted, stream its logs, and exit
+    If a source/destination side is remote (a Docker volume or a host path) and
+    we're not already inside a helper, spawn a helper container with the
+    source/dest mounted at /dvm/source / /dvm/dest, stream its logs, and exit
     with its status code.
 
-    No-op when no volume flag is present; the caller proceeds normally.
+    No-op when both sides are local; the caller proceeds in-process.
     """
-    if not (input_volume or output_volume):
+    src = _resolve_side("input", input_volume, input_host)
+    dst = _resolve_side("output", output_volume, output_host)
+    if not (src.is_remote or dst.is_remote):
         return
     if os.environ.get("DVM_HELPER_MODE") == "1":
         err_console.print(
-            "[bold red]--input-volume / --output-volume cannot be used "
-            "inside a helper container.[/]"
+            "[bold red]Volume / host-path flags cannot be used inside a helper "
+            "container.[/]"
         )
         raise typer.Exit(EXIT_VALIDATION)
 
@@ -55,41 +99,42 @@ def _pivot_if_volumes(
     if not client.ping():
         err_console.print(
             "[bold red]Docker unavailable.[/] "
-            "Volume flags require the Docker socket. "
+            "Volume / host-path flags require the Docker socket. "
             "Re-run with: [dim]-v /var/run/docker.sock:/var/run/docker.sock[/]"
         )
         raise typer.Exit(EXIT_CONFIG)
 
-    for kind, vol in (("input", input_volume), ("output", output_volume)):
-        if not vol:
+    # Validate volume sides exist (host paths are dockerd-resolved at run time).
+    for label, side in (("input", src), ("output", dst)):
+        if side.kind != "volume":
             continue
         try:
-            exists = client.volume_exists(vol)
+            exists = client.volume_exists(side.mount_key)
         except DockerError as exc:
             _docker_fail(exc)
         if not exists:
             err_console.print(
-                f"[bold red]{kind.capitalize()} volume {vol!r} does not exist.[/] "
-                f"Create it first with `dvm volumes create {vol}`."
+                f"[bold red]{label.capitalize()} volume {side.mount_key!r} does "
+                f"not exist.[/] Create it with `dvm volumes create {side.mount_key}`."
             )
             raise typer.Exit(EXIT_VALIDATION)
 
     volume_mounts: dict[str, dict[str, str]] = {}
     helper_env: dict[str, Any] = {k: v for k, v in env.items() if v is not None}
-    if input_volume:
-        volume_mounts[input_volume] = {"bind": "/dvm/source", "mode": input_mode}
+    if src.is_remote:
+        volume_mounts[src.mount_key] = {"bind": "/dvm/source", "mode": input_mode}
         helper_env["INPUT_PATH"] = "/dvm/source"
-    if output_volume:
-        volume_mounts[output_volume] = {"bind": "/dvm/dest", "mode": output_mode}
+    if dst.is_remote:
+        volume_mounts[dst.mount_key] = {"bind": "/dvm/dest", "mode": output_mode}
         helper_env["OUTPUT_PATH"] = "/dvm/dest"
 
-    # Scrub volume flags so the helper doesn't loop trying to pivot again.
-    helper_env.pop("INPUT_VOLUME", None)
-    helper_env.pop("OUTPUT_VOLUME", None)
+    # Scrub remote flags so the helper doesn't loop trying to pivot again.
+    for key in ("INPUT_VOLUME", "OUTPUT_VOLUME", "INPUT_HOST", "OUTPUT_HOST"):
+        helper_env.pop(key, None)
     helper_env["OPERATION"] = subcommand.upper()
 
     mount_desc = ", ".join(
-        f"{vol}→{m['bind']} ({m['mode']})" for vol, m in volume_mounts.items()
+        f"{key}→{m['bind']} ({m['mode']})" for key, m in volume_mounts.items()
     )
     console.print(
         Panel.fit(

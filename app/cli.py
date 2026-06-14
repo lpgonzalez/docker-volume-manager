@@ -66,6 +66,20 @@ app.add_typer(volumes_app)
 # Subcommands
 # ---------------------------------------------------------------------------
 
+_HOST_OPT_HELP = (
+    "Use an absolute HOST path (mounted into a helper container; requires the "
+    "Docker socket). Mutually exclusive with the matching --*-volume flag."
+)
+
+
+def _warn_host_paths(*hosts: str | None) -> None:
+    """Warn that a host-path mount grants the helper host-level access."""
+    if any(hosts):
+        err_console.print(
+            "[yellow]Note:[/] mounting a host path via the Docker socket gives the "
+            "helper container root-level access to that path on the host."
+        )
+
 
 @app.command("backup")
 def backup(
@@ -85,6 +99,9 @@ def backup(
         envvar="INPUT_VOLUME",
         help="Read source from a Docker volume (pivots to a helper container).",
     ),
+    input_host: str | None = typer.Option(
+        None, "--input-host", envvar="INPUT_HOST", help=_HOST_OPT_HELP
+    ),
     output_path: str = typer.Option(
         "/dvm/dest",
         "--output",
@@ -97,6 +114,9 @@ def backup(
         "--output-volume",
         envvar="OUTPUT_VOLUME",
         help="Write archive to a Docker volume (pivots to a helper container).",
+    ),
+    output_host: str | None = typer.Option(
+        None, "--output-host", envvar="OUTPUT_HOST", help=_HOST_OPT_HELP
     ),
     compression: str = typer.Option(
         "ZSTD",
@@ -177,13 +197,15 @@ def backup(
         )
         raise typer.Exit(EXIT_VALIDATION)
 
+    _warn_host_paths(input_host, output_host)
+
     keyring_homedir: str | None = None
     if file_list:
-        if input_volume or output_volume:
+        if input_volume or output_volume or input_host or output_host:
             err_console.print(
                 "[bold red]--recipient-key-file is not yet supported with volume "
-                "flags.[/] Mount your keyring (`-v ~/.gnupg:/root/.gnupg:ro`) and "
-                "use --recipient instead."
+                "or host-path flags.[/] Mount your keyring "
+                "(`-v ~/.gnupg:/root/.gnupg:ro`) and use --recipient instead."
             )
             raise typer.Exit(EXIT_VALIDATION)
         try:
@@ -211,6 +233,8 @@ def backup(
             sign_key_passphrase=sign_key_passphrase,
             input_volume=input_volume,
             output_volume=output_volume,
+            input_host=input_host,
+            output_host=output_host,
             log_level=log_level,
             log_output=_parse_log_output(log_output),
         )
@@ -243,6 +267,9 @@ def restore(
         envvar="INPUT_VOLUME",
         help="Read backup from a Docker volume (pivots to a helper; mounted rw for par2 repair).",
     ),
+    input_host: str | None = typer.Option(
+        None, "--input-host", envvar="INPUT_HOST", help=_HOST_OPT_HELP
+    ),
     output_path: str = typer.Option(
         "/dvm/source",
         "--output",
@@ -255,6 +282,9 @@ def restore(
         "--output-volume",
         envvar="OUTPUT_VOLUME",
         help="Restore content into a Docker volume (pivots to a helper container).",
+    ),
+    output_host: str | None = typer.Option(
+        None, "--output-host", envvar="OUTPUT_HOST", help=_HOST_OPT_HELP
     ),
     timestamp: str | None = typer.Option(
         None,
@@ -278,6 +308,7 @@ def restore(
     log_output: str = typer.Option("console", "--log-output", envvar="LOG_OUTPUT"),
 ) -> None:
     """Restore an existing backup into OUTPUT_PATH."""
+    _warn_host_paths(input_host, output_host)
     _run_restore(
         name=name,
         input_path=input_path,
@@ -287,6 +318,8 @@ def restore(
         overwrite=overwrite,
         input_volume=input_volume,
         output_volume=output_volume,
+        input_host=input_host,
+        output_host=output_host,
         log_level=log_level,
         log_output=_parse_log_output(log_output),
     )
@@ -314,6 +347,9 @@ def verify(
         envvar="OUTPUT_VOLUME",
         help="Verify a backup stored in a Docker volume (pivots to a helper; "
         "mounted rw for par2 repair).",
+    ),
+    output_host: str | None = typer.Option(
+        None, "--output-host", envvar="OUTPUT_HOST", help=_HOST_OPT_HELP
     ),
     encryption_key: str | None = typer.Option(
         None, "--encryption-key", "-k", envvar="ENCRYPTION_KEY"
@@ -344,11 +380,13 @@ def verify(
     Auto-repairs a recoverable archive by default; pass --no-repair to audit
     read-only without modifying the backup.
     """
+    _warn_host_paths(output_host)
     _run_verify(
         name=name,
         output_path=output_path,
         encryption_key=encryption_key,
         output_volume=output_volume,
+        output_host=output_host,
         timestamp=timestamp,
         repair=repair,
         log_level=log_level,
@@ -365,6 +403,9 @@ def copy(
         envvar="INPUT_VOLUME",
         help="Source is a Docker volume (pivots to a helper container).",
     ),
+    input_host: str | None = typer.Option(
+        None, "--input-host", envvar="INPUT_HOST", help=_HOST_OPT_HELP
+    ),
     output_path: str = typer.Option(
         "/dvm/dest", "--output", "-o", envvar="OUTPUT_PATH"
     ),
@@ -373,6 +414,9 @@ def copy(
         "--output-volume",
         envvar="OUTPUT_VOLUME",
         help="Destination is a Docker volume (pivots to a helper container).",
+    ),
+    output_host: str | None = typer.Option(
+        None, "--output-host", envvar="OUTPUT_HOST", help=_HOST_OPT_HELP
     ),
     overwrite: bool = typer.Option(
         True,
@@ -386,12 +430,15 @@ def copy(
     log_output: str = typer.Option("console", "--log-output", envvar="LOG_OUTPUT"),
 ) -> None:
     """Mirror INPUT_PATH into OUTPUT_PATH (no compression or encryption)."""
+    _warn_host_paths(input_host, output_host)
     _run_copy(
         input_path=input_path,
         output_path=output_path,
         overwrite=overwrite,
         input_volume=input_volume,
         output_volume=output_volume,
+        input_host=input_host,
+        output_host=output_host,
         log_level=log_level,
         log_output=_parse_log_output(log_output),
     )

@@ -13,6 +13,7 @@ Requires a TTY (``docker run -it``).
 
 from __future__ import annotations
 
+import os
 import sys
 
 import typer
@@ -32,12 +33,19 @@ from cli_shared import (
 from docker_client import DockerClient, DockerError, VolumeInfo, format_size
 from runners import _run_backup, _run_copy, _run_restore, _run_verify
 from volumes_cli import _render_volume_details, _render_volume_table
-from wizard_store import BackupStore, LocalDirStore, VolumeStore
+from wizard_store import (
+    BackupStore,
+    HostPathStore,
+    LocalDirStore,
+    VolumeStore,
+    list_host_subdirs,
+)
 
 # Choice lists shared between rich's validation and TAB completion.
 _OPERATIONS = ["backup", "restore", "verify", "copy", "rename", "volumes", "quit"]
 _VOLUME_ACTIONS = ["list", "inspect", "create", "rename", "remove", "quit"]
 _LOG_OUTPUTS = ["console", "file", "json_file"]
+_LOCATION_KINDS = ["local", "volume", "host"]
 
 
 def _ensure_tty() -> None:
@@ -54,22 +62,102 @@ def _wizard_location(
     default_path: str,
     *,
     purpose: str,
-) -> tuple[str, str | None, BackupStore]:
-    """Pick the location first: a bind-mount path or a Docker volume.
+) -> tuple[str, str | None, str | None, BackupStore]:
+    """Pick the location first: a Docker volume, a host path, or a local mount.
 
-    Returns ``(path, volume_name, store)``. ``store`` lets the caller list and
-    validate backups uniformly (``LocalDirStore`` for a path, ``VolumeStore`` for
-    a volume). For a volume, ``path`` is the ``/app/*`` placeholder the pivot
-    overrides; ``volume_name`` is None for a path.
+    Returns ``(path, volume_name, host_path, store)``. Exactly one of
+    ``volume_name`` / ``host_path`` is set for the remote kinds (the pivot mounts
+    them in a helper); both are None for a directly-mounted local path. ``store``
+    lets the caller list/validate backups uniformly.
     """
-    if Confirm.ask(f"Use a Docker volume as {purpose}?", default=False):
+    kind = completion.ask(
+        f"{purpose}: location type",
+        completion.words(_LOCATION_KINDS),
+        choices=_LOCATION_KINDS,
+        default="local",
+    ).lower()
+
+    if kind == "volume":
         store = _wizard_volume_location(purpose)
         if store is not None:
-            return default_path, store.volume, store
-        # Socket unavailable / no volumes / cancelled → fall back to path entry.
+            return default_path, store.mount_key, None, store
+        # Socket unavailable / no volumes / cancelled → fall back to local path.
+    elif kind == "host":
+        picked = _wizard_host_location(purpose)
+        if picked is not None:
+            host_path, store = picked
+            return default_path, None, host_path, store
+        # Cancelled / no socket → fall back to local path.
 
     path = completion.ask(label, completion.paths(), default=default_path)
-    return path, None, LocalDirStore(path)
+    return path, None, None, LocalDirStore(path)
+
+
+def _wizard_host_location(purpose: str) -> tuple[str, HostPathStore] | None:
+    """Browse the host filesystem (via helper `find`) and pick an absolute path.
+
+    The container can't see the host FS, so listing is done by throwaway helpers.
+    Returns ``(host_path, store)`` or None to fall back to a local path.
+    """
+    client = DockerClient()
+    if not client.ping():
+        err_console.print(
+            "[yellow]Docker socket unavailable — host paths need it. "
+            "Falling back to a local path.[/]"
+        )
+        return None
+    console.print(
+        Panel.fit(
+            "[yellow]A host path is mounted into a helper container through the "
+            "Docker socket — that grants root-level access to that path on the "
+            "host. Only proceed with paths you trust.[/]",
+            border_style="yellow",
+        )
+    )
+    if not Confirm.ask(f"Use a host path as {purpose}?", default=False):
+        return None
+
+    start = os.environ.get("DVM_HOST_PWD") or os.environ.get("DVM_HOST_HOME") or "/"
+    host_path = _wizard_browse_host(client, start)
+    if not host_path:
+        return None
+    return host_path, HostPathStore(host_path, client)
+
+
+# Navigation sentinels for the host browser (kept out of the real entry list).
+_HB_USE = "· use this directory ·"
+_HB_UP = "· go up ·"
+
+
+def _wizard_browse_host(client: DockerClient, start: str) -> str | None:
+    """Descend the host filesystem one directory at a time; return the chosen path.
+
+    Pick a sub-directory to enter, '· go up ·', '· use this directory ·', or type
+    an absolute host path to jump to it. Blank cancels.
+    """
+    current = start if os.path.isabs(start) else "/"
+    while True:
+        subdirs = list_host_subdirs(client, current)
+        choice = wizard_ui.select_paged(
+            f"Host: {current} — enter a sub-dir, use it, go up, or type a path",
+            [_HB_USE, _HB_UP, *subdirs],
+            allow_custom=True,
+            title=f"Host directory: {current}",
+        )
+        if choice is None:
+            return None
+        if choice == _HB_USE:
+            return current
+        if choice == _HB_UP:
+            current = os.path.dirname(current.rstrip("/")) or "/"
+        elif choice in subdirs:
+            current = os.path.join(current, choice)
+        elif os.path.isabs(choice):
+            current = choice
+        else:
+            err_console.print(
+                f"[red]{choice!r} is not a listed sub-dir or an absolute path.[/]"
+            )
 
 
 def _wizard_volume_location(purpose: str) -> VolumeStore | None:
@@ -262,10 +350,10 @@ def _wizard_encryption_choice() -> tuple[str | None, list[str]]:
 
 
 def _wizard_run_backup() -> None:
-    input_path, input_volume, _ = _wizard_location(
+    input_path, input_volume, input_host, _ = _wizard_location(
         "Source path (the data to back up)", "/dvm/source", purpose="source"
     )
-    output_path, output_volume, dest_store = _wizard_location(
+    output_path, output_volume, output_host, dest_store = _wizard_location(
         "Destination path (where the backup is written)",
         "/dvm/dest",
         purpose="destination",
@@ -302,6 +390,8 @@ def _wizard_run_backup() -> None:
         sign_key_passphrase=None,
         input_volume=input_volume,
         output_volume=output_volume,
+        input_host=input_host,
+        output_host=output_host,
         log_level=log_level,
         log_output=log_output_list,
     )
@@ -314,7 +404,7 @@ def _wizard_run_restore() -> None:
         "lives — the dir that contains [bold]<name>/<timestamp>/…[/] (e.g. the dir you "
         "backed up to). Source and destination must differ.[/]"
     )
-    input_path, input_volume, src_store = _wizard_location(
+    input_path, input_volume, input_host, src_store = _wizard_location(
         "Backup source dir (holds <name>/<timestamp>/)",
         "/dvm/dest",
         purpose="backup source (where the backup is stored)",
@@ -322,7 +412,7 @@ def _wizard_run_restore() -> None:
     name, timestamp = _wizard_pick_existing_backup(src_store)
     if name is None:
         return
-    output_path, output_volume, _ = _wizard_location(
+    output_path, output_volume, output_host, _ = _wizard_location(
         "Restore destination dir (where files are written)",
         "/dvm/source",
         purpose="restore destination",
@@ -350,13 +440,15 @@ def _wizard_run_restore() -> None:
         overwrite=overwrite,
         input_volume=input_volume,
         output_volume=output_volume,
+        input_host=input_host,
+        output_host=output_host,
         log_level=log_level,
         log_output=log_output_list,
     )
 
 
 def _wizard_run_verify() -> None:
-    output_path, output_volume, store = _wizard_location(
+    output_path, output_volume, output_host, store = _wizard_location(
         "Backup directory", "/dvm/dest", purpose="backup location"
     )
     name, timestamp = _wizard_pick_existing_backup(store)
@@ -375,6 +467,7 @@ def _wizard_run_verify() -> None:
         output_path=output_path,
         encryption_key=encryption_key,
         output_volume=output_volume,
+        output_host=output_host,
         timestamp=timestamp,
         repair=repair,
         log_level=log_level,
@@ -383,10 +476,10 @@ def _wizard_run_verify() -> None:
 
 
 def _wizard_run_copy() -> None:
-    input_path, input_volume, _ = _wizard_location(
+    input_path, input_volume, input_host, _ = _wizard_location(
         "Source path", "/dvm/source", purpose="source"
     )
-    output_path, output_volume, dest_store = _wizard_location(
+    output_path, output_volume, output_host, dest_store = _wizard_location(
         "Destination path", "/dvm/dest", purpose="destination"
     )
     if not dest_store.is_writable():
@@ -403,6 +496,8 @@ def _wizard_run_copy() -> None:
         overwrite=overwrite,
         input_volume=input_volume,
         output_volume=output_volume,
+        input_host=input_host,
+        output_host=output_host,
         log_level=log_level,
         log_output=log_output_list,
     )

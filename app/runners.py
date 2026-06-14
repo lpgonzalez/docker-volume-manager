@@ -24,7 +24,7 @@ from cli_shared import (
     err_console,
 )
 from config import Config
-from pivot import _pivot_if_volumes
+from pivot import _pivot_if_remote
 
 
 def _build_config(**fields) -> Config:
@@ -98,10 +98,12 @@ def _run_backup(
     sign_key_passphrase: str | None = None,
     input_volume: str | None = None,
     output_volume: str | None = None,
+    input_host: str | None = None,
+    output_host: str | None = None,
     log_level: str,
     log_output: list[str],
 ) -> None:
-    _pivot_if_volumes(
+    _pivot_if_remote(
         subcommand="backup",
         env={
             "BACKUP_FILE_NAME": name,
@@ -118,6 +120,8 @@ def _run_backup(
         },
         input_volume=input_volume,
         output_volume=output_volume,
+        input_host=input_host,
+        output_host=output_host,
         input_mode="ro",
         output_mode="rw",
     )
@@ -148,10 +152,12 @@ def _run_restore(
     overwrite: bool,
     input_volume: str | None = None,
     output_volume: str | None = None,
+    input_host: str | None = None,
+    output_host: str | None = None,
     log_level: str,
     log_output: list[str],
 ) -> None:
-    _pivot_if_volumes(
+    _pivot_if_remote(
         subcommand="restore",
         env={
             "BACKUP_FILE_NAME": name,
@@ -165,6 +171,8 @@ def _run_restore(
         },
         input_volume=input_volume,
         output_volume=output_volume,
+        input_host=input_host,
+        output_host=output_host,
         input_mode="rw",
         output_mode="rw",
     )
@@ -188,12 +196,13 @@ def _run_verify(
     output_path: str,
     encryption_key: str | None,
     output_volume: str | None = None,
+    output_host: str | None = None,
     timestamp: str | None = None,
     repair: bool = True,
     log_level: str,
     log_output: list[str],
 ) -> None:
-    _pivot_if_volumes(
+    _pivot_if_remote(
         subcommand="verify",
         env={
             "BACKUP_FILE_NAME": name,
@@ -204,8 +213,8 @@ def _run_verify(
             "LOG_LEVEL": log_level,
             "LOG_OUTPUT": ",".join(log_output),
         },
-        input_volume=None,
         output_volume=output_volume,
+        output_host=output_host,
         # Read-only verify only needs ro; repair must write back to the volume.
         output_mode="rw" if repair else "ro",
     )
@@ -229,10 +238,12 @@ def _run_copy(
     overwrite: bool,
     input_volume: str | None = None,
     output_volume: str | None = None,
+    input_host: str | None = None,
+    output_host: str | None = None,
     log_level: str,
     log_output: list[str],
 ) -> None:
-    _pivot_if_volumes(
+    _pivot_if_remote(
         subcommand="copy",
         env={
             "INPUT_PATH": input_path,
@@ -243,6 +254,8 @@ def _run_copy(
         },
         input_volume=input_volume,
         output_volume=output_volume,
+        input_host=input_host,
+        output_host=output_host,
         input_mode="ro",
         output_mode="rw",
     )
