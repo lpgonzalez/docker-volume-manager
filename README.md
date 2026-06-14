@@ -203,13 +203,37 @@ and the destination is left untouched.
 ### `verify`
 
 ```
-dvm verify -n NAME [-o OUTPUT_PATH | --output-volume NAME] [-k PASSPHRASE]
+dvm verify -n NAME [-o OUTPUT_PATH | --output-volume NAME] [-k PASSPHRASE] [-t TIMESTAMP] [--no-repair]
 ```
 
-Reports `backup_exists`, `is_encrypted`, `can_decrypt`, `can_decompress`,
-`parity_files_exist`, `parity_valid`, `parity_recovered`. PAR2 repair is
-attempted automatically when validity fails; `can_decompress` is re-checked
-after a successful recovery so the report reflects post-repair state.
+**Auto-repairs by default.** Verify inspects the backup and, when PAR2 parity
+shows the archive is damaged-but-recoverable, fixes it **in place** with par2
+(this rewrites the backup file) — saving you a second command. It reports
+`backup_exists`, `is_encrypted`, `can_decrypt`, `can_decompress`,
+`parity_files_exist`, `parity_valid`, `parity_repairable` and
+`parity_recovered`.
+
+Pass `--no-repair` for a strictly **read-only audit** that never modifies the
+file (useful on read-only media or when you want the archive left pristine). In
+the interactive wizard the same choice is offered as a prompt (no extra flags
+needed).
+
+Every run logs a single `verify.outcome` code modelling exactly what happened:
+
+| Outcome | Meaning | Healthy | Exit |
+|---|---|:--:|:--:|
+| `INTACT` | Parity valid, archive correct | ✔ | 0 |
+| `INTACT_NO_PARITY` | No parity, but decompresses | ✔ | 0 |
+| `REPAIRED` | Was corrupt → repaired in place (**file modified**) | ✔ | 0 |
+| `CORRUPT_REPAIRABLE` | Corrupt & recoverable, but `--no-repair` set | ✘ | 4 |
+| `REPAIR_FAILED` | Recoverable, but `par2 repair` failed | ✘ | 4 |
+| `CORRUPT_UNREPAIRABLE` | Corrupt, damage exceeds parity → **data loss** | ✘ | 4 |
+| `DAMAGED_NO_PARITY` | Won't decompress and has no parity to recover | ✘ | 4 |
+| `DECRYPT_FAILED` | Encrypted, wrong/missing key | ✘ | 4 |
+| `BACKUP_MISSING` | No backup found | ✘ | 4 |
+
+At the process level the contract stays simple: exit `0` = healthy (intact or
+repaired), exit `4` = a problem you need to act on.
 
 ### `copy`
 
@@ -275,6 +299,72 @@ docker run --rm -it \
 
 Loops a menu for backup / restore / verify / copy / rename / volumes / quit
 until you exit. Errors don't kill the wizard — you return to the menu.
+
+The prompts are **location-first**: you choose a directory or a Docker volume,
+then the wizard **lists what's there** and you pick from it — no need to recall
+exact names. For restore/verify it shows the existing **backup names**, then the
+dated **timestamps** for the chosen one (newest first), validating an actual
+archive is present before continuing; for backup it lists existing names (reuse
+or type a new one) and checks the destination is writable. Long lists are shown
+as a **numbered, paginated table** (`n`/`p` to navigate; pick by number or name).
+Volume contents are enumerated by spawning a short-lived helper container.
+
+**TAB completion** is available at the prompts (powered by the stdlib
+`readline`, so run with `-it`): operation and action names, compression /
+encryption / log-level choices, log outputs, **filesystem paths** (e.g.
+`/app/ou`↹ → `/app/output_dir/`), existing **backup base names**, and **Docker
+volume names**. It degrades silently if `readline` isn't available.
+
+---
+
+## Exit codes
+
+Every command exits with a **typed code** so automation can branch on the exact
+failure. The tens digit identifies the operation; the units the reason. A script
+that only checks `$? != 0` keeps working — the detail is additive.
+
+| Code | Meaning |
+|--:|---|
+| `0` | Success (verify: intact **or** auto-repaired) |
+| `1` | Unexpected/unhandled error |
+| `2` | Validation — bad arguments, mutually-exclusive flags, missing confirmation |
+| `3` | Environment — Docker socket unreachable, keyring/setup failure |
+| `4` | Generic operation failure (fallback) |
+| **backup** | |
+| `10` | Input path not found / not a directory |
+| `11` | Output directory not writable |
+| `12` | Compression / tar pipeline failed |
+| `13` | Encryption or detached-signature failed |
+| **restore** | |
+| `20` | Backup / archive not found |
+| `21` | Decryption failed (wrong or missing key) |
+| `22` | Archive corrupt / unreadable / extraction failed |
+| `23` | PAR2 repair failed (or par2 unavailable) |
+| `24` | Unsafe archive member (path traversal / bad symlink) |
+| `25` | Destination could not be prepared / not overwritten |
+| **verify** | |
+| `30` | Corrupt and **unrepairable** (data loss) |
+| `31` | Corrupt but recoverable, `--no-repair` set |
+| `32` | PAR2 repair attempted and failed |
+| `33` | Decryption failed |
+| `34` | Damaged / won't decompress |
+| `35` | Backup not found |
+| **copy** | |
+| `40` | Input not found / unreadable / empty |
+| `41` | Output not writable |
+| `42` | Destination not overwritten (declined) |
+| **rename** | |
+| `50` | Source volume does not exist |
+| `51` | Target volume already exists |
+| `52` | Source volume in use (pass `--force`) |
+| `53` | Copy/verify failed (rolled back) |
+| **volumes** | |
+| `60` | Volume not found |
+| `61` | Volume already exists |
+| `62` | Volume in use / removal failed |
+
+`verify` also logs a matching `verify.outcome` name (e.g. `REPAIRED`,
+`CORRUPT_UNREPAIRABLE`) alongside its 30-35 code.
 
 ---
 

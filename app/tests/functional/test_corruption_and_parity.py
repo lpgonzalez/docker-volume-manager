@@ -2,8 +2,12 @@
 Functional tests: archive corruption detection and PAR2 repair.
 
 No Docker required — these just produce an archive in tmp_path, tamper a few
-bytes, and verify that `BackupVerifier` detects the damage (and that PAR2
-recovery kicks in when parity files are present).
+bytes, and verify that `BackupVerifier` detects the damage.
+
+`verify_all()` is **read-only**: it classifies the parity state (valid /
+repairable / unrepairable) but never rewrites the archive. PAR2 repair only
+happens when the verifier is constructed with ``repair=True`` (the CLI's
+``--repair`` flag / the wizard's repair prompt).
 """
 
 from __future__ import annotations
@@ -35,6 +39,20 @@ def _corrupt_byte(archive_path: str, offset: int = 1024) -> None:
         f.write(b"\xff\xff\xff\xff")
 
 
+def _build_with_parity(input_dir, output_dir, name, parity_percentage):
+    manager = BackupManager(
+        vol_name=name,
+        input_path=str(input_dir),
+        output_path=str(output_dir),
+        compression="gz",
+        create_parity=True,
+        parity_percentage=parity_percentage,
+    )
+    archive = manager.compress()
+    manager.create_parity_file(archive, parity_percentage)
+    return archive
+
+
 def test_verify_detects_corruption_without_parity(populated_input):
     input_dir, output_dir = populated_input
     manager = BackupManager(
@@ -54,44 +72,48 @@ def test_verify_detects_corruption_without_parity(populated_input):
     assert report["can_decompress"] is False
 
 
-def test_verify_repairs_corruption_with_parity(populated_input):
+def test_verify_is_readonly_and_reports_repairable(populated_input):
+    """Default verify must NOT touch the archive: it reports the damage as
+    repairable and leaves the corrupted bytes in place."""
     input_dir, output_dir = populated_input
-    manager = BackupManager(
-        vol_name="corrupt-with-parity",
-        input_path=str(input_dir),
-        output_path=str(output_dir),
-        compression="gz",
-        create_parity=True,
-        parity_percentage=30,
-    )
-    archive = manager.compress()
-    manager.create_parity_file(archive, 30)
+    archive = _build_with_parity(input_dir, output_dir, "corrupt-with-parity", 30)
+
+    _corrupt_byte(archive, offset=2048)
+    with open(archive, "rb") as f:
+        before = f.read()
+
+    report = BackupVerifier(archive).verify_all()  # repair defaults to False
+    assert report["parity_files_exist"] is True
+    assert report["parity_valid"] is False
+    assert report["parity_repairable"] is True
+    # Read-only: no repair was attempted, archive untouched, still undecompressable.
+    assert report["parity_recovered"] is None
+    assert report["can_decompress"] is False
+    with open(archive, "rb") as f:
+        after = f.read()
+    assert after == before, "verify must not modify the archive"
+
+
+def test_verify_with_repair_flag_recovers(populated_input):
+    """With repair=True the archive is repaired in place and becomes valid."""
+    input_dir, output_dir = populated_input
+    archive = _build_with_parity(input_dir, output_dir, "repairable", 30)
 
     _corrupt_byte(archive, offset=2048)
 
-    report = BackupVerifier(archive).verify_all()
+    report = BackupVerifier(archive, repair=True).verify_all()
     assert report["parity_files_exist"] is True
-    # Parity reported invalid pre-repair, but recovery must have succeeded.
-    # After recovery par2 restores the archive, so decompression works again.
-    assert (
-        report.get("parity_recovered", False) is True or report["parity_valid"] is True
-    )
+    assert report["parity_valid"] is False
+    assert report["parity_repairable"] is True
+    assert report["parity_recovered"] is True
+    # par2 restored the archive, so decompression works again.
     assert report["can_decompress"] is True
 
 
-def test_verify_catastrophic_corruption_cannot_be_recovered(populated_input):
-    """Too much damage → par2 can't repair → verify reports the failure cleanly."""
+def test_verify_classifies_catastrophic_as_unrepairable(populated_input):
+    """Too much damage → par2 can't repair → classified unrepairable, read-only."""
     input_dir, output_dir = populated_input
-    manager = BackupManager(
-        vol_name="catastrophic",
-        input_path=str(input_dir),
-        output_path=str(output_dir),
-        compression="gz",
-        create_parity=True,
-        parity_percentage=5,  # low redundancy
-    )
-    archive = manager.compress()
-    manager.create_parity_file(archive, 5)
+    archive = _build_with_parity(input_dir, output_dir, "catastrophic", 5)
 
     # Overwrite ~half of the archive with garbage — beyond recovery capacity.
     size = os.path.getsize(archive)
@@ -100,10 +122,26 @@ def test_verify_catastrophic_corruption_cannot_be_recovered(populated_input):
         f.write(os.urandom(size // 2))
 
     report = BackupVerifier(archive).verify_all()
-    # We don't assert a specific combination beyond "recovery failed and
-    # decompression fails". Depending on par2 version either parity_recovered
-    # is False or can_decompress is False — both are acceptable failure signals.
-    recovered = report.get("parity_recovered", False)
+    assert report["parity_valid"] is False
+    assert report["parity_repairable"] is False
+    assert report["parity_recovered"] is None
+    assert report["can_decompress"] is False
+
+
+def test_verify_repair_flag_cannot_recover_catastrophic(populated_input):
+    """repair=True on irrecoverable damage reports the failure cleanly."""
+    input_dir, output_dir = populated_input
+    archive = _build_with_parity(input_dir, output_dir, "catastrophic-repair", 5)
+
+    size = os.path.getsize(archive)
+    with open(archive, "r+b") as f:
+        f.seek(size // 4)
+        f.write(os.urandom(size // 2))
+
+    report = BackupVerifier(archive, repair=True).verify_all()
+    assert report["parity_repairable"] is False
+    # Unrepairable: no repair attempted (or attempted and failed) → not recovered.
+    recovered = report.get("parity_recovered")
     decomp_ok = report.get("can_decompress", False)
     assert not (recovered and decomp_ok), (
         "heavy corruption should not pass both recovery and decompression"

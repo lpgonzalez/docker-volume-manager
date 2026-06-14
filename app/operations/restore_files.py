@@ -30,6 +30,14 @@ import tempfile
 
 import gnupg
 
+from cli_shared import (
+    EXIT_RESTORE_ARCHIVE_CORRUPT,
+    EXIT_RESTORE_BACKUP_NOT_FOUND,
+    EXIT_RESTORE_DECRYPT_FAILED,
+    EXIT_RESTORE_DESTINATION_ERROR,
+    EXIT_RESTORE_PARITY_REPAIR_FAILED,
+    EXIT_RESTORE_UNSAFE_ARCHIVE,
+)
 from operations import codecs
 from operations.fs_overwrite import (
     clear_directory_contents,
@@ -52,7 +60,16 @@ _PAX_MSG = (
 
 
 class RestoreError(Exception):
-    pass
+    """A restore failure carrying the specific CLI exit code for its cause.
+
+    ``code`` defaults to ``EXIT_RESTORE_ARCHIVE_CORRUPT`` (a conservative
+    "archive unusable") so any raise site that forgets to set one still maps to
+    a restore-range code rather than the generic operation failure.
+    """
+
+    def __init__(self, message: str, code: int = EXIT_RESTORE_ARCHIVE_CORRUPT):
+        super().__init__(message)
+        self.code = code
 
 
 def _is_timestamp_name(name: str) -> bool:
@@ -189,14 +206,16 @@ def _run_par2_verify_or_repair(par2_path: str, archive_path: str) -> None:
                 proc2.stdout,
                 proc2.stderr,
             )
-            raise RestoreError("par2 repair failed")
+            raise RestoreError("par2 repair failed", EXIT_RESTORE_PARITY_REPAIR_FAILED)
         logger.info("par2 repair succeeded for %s", archive_path)
     except FileNotFoundError:
         logger.error("par2 executable not found; cannot verify/repair parity.")
-        raise RestoreError("par2 not available") from None
+        raise RestoreError(
+            "par2 not available", EXIT_RESTORE_PARITY_REPAIR_FAILED
+        ) from None
     except Exception as e:
         logger.exception("Unexpected par2 error: %s", e)
-        raise RestoreError("par2 error") from e
+        raise RestoreError("par2 error", EXIT_RESTORE_PARITY_REPAIR_FAILED) from e
 
 
 def _decrypt_gpg_file(enc_path: str, passphrase: str | None, out_dir: str) -> str:
@@ -207,13 +226,15 @@ def _decrypt_gpg_file(enc_path: str, passphrase: str | None, out_dir: str) -> st
     logger.info("Attempting to decrypt %s", enc_path)
     if not passphrase:
         logger.error("No ENCRYPTION_KEY provided for decryption")
-        raise RestoreError("Missing decryption passphrase")
+        raise RestoreError("Missing decryption passphrase", EXIT_RESTORE_DECRYPT_FAILED)
 
     try:
         g = gnupg.GPG()
     except Exception as exc:
         logger.exception("Failed to initialize GPG library")
-        raise RestoreError("GPG initialization failed") from exc
+        raise RestoreError(
+            "GPG initialization failed", EXIT_RESTORE_DECRYPT_FAILED
+        ) from exc
 
     # Preserve the inner compression extension in the tempfile name so
     # _determine_tar_mode picks the right decompressor later
@@ -234,7 +255,7 @@ def _decrypt_gpg_file(enc_path: str, passphrase: str | None, out_dir: str) -> st
                 os.remove(tmp_path)
             except Exception:
                 pass
-            raise RestoreError("GPG decryption failed")
+            raise RestoreError("GPG decryption failed", EXIT_RESTORE_DECRYPT_FAILED)
         logger.info("Decryption successful -> %s", tmp_path)
         return tmp_path
     except Exception as e:
@@ -244,7 +265,7 @@ def _decrypt_gpg_file(enc_path: str, passphrase: str | None, out_dir: str) -> st
                 os.remove(tmp_path)
         except Exception:
             pass
-        raise RestoreError("Decryption failed") from e
+        raise RestoreError("Decryption failed", EXIT_RESTORE_DECRYPT_FAILED) from e
 
 
 def _determine_tar_mode(archive_name: str) -> str:
@@ -310,7 +331,9 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
                         "Potential path traversal detected in archive member: %s",
                         member.name,
                     )
-                    raise RestoreError("Unsafe archive member path")
+                    raise RestoreError(
+                        "Unsafe archive member path", EXIT_RESTORE_UNSAFE_ARCHIVE
+                    )
                 # Symlinks/hardlinks: the link target must also stay inside
                 # dest_dir, else a later member could be written through it to an
                 # arbitrary location. Absolute targets are rejected outright;
@@ -322,7 +345,9 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
                             member.name,
                             member.linkname,
                         )
-                        raise RestoreError("Unsafe archive link target")
+                        raise RestoreError(
+                            "Unsafe archive link target", EXIT_RESTORE_UNSAFE_ARCHIVE
+                        )
                     link_base = os.path.dirname(member_path)
                     link_target = os.path.join(link_base, member.linkname)
                     if not _is_within_directory(dest_dir, link_target):
@@ -331,7 +356,9 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
                             member.name,
                             member.linkname,
                         )
-                        raise RestoreError("Unsafe archive link target")
+                        raise RestoreError(
+                            "Unsafe archive link target", EXIT_RESTORE_UNSAFE_ARCHIVE
+                        )
     except tarfile.ReadError:
         logger.exception("Archive is unreadable or corrupted: %s", archive_path)
         raise RestoreError("Archive unreadable or corrupted") from None
@@ -447,7 +474,9 @@ def _extract_archive(archive_path: str, dest_dir: str) -> None:
         raise RestoreError("Archive unreadable or corrupted") from None
     except PermissionError as e:
         logger.exception("Permission error while extracting to %s: %s", dest_dir, e)
-        raise RestoreError("Permission denied during extraction") from e
+        raise RestoreError(
+            "Permission denied during extraction", EXIT_RESTORE_DESTINATION_ERROR
+        ) from e
     except Exception as e:
         logger.exception("Unexpected error during extraction: %s", e)
         raise RestoreError("Extraction failed") from e
@@ -524,7 +553,9 @@ def restore(
         os.makedirs(output_path, exist_ok=True)
     except Exception as exc:
         logger.exception("Unable to create output path: %s", output_path)
-        raise RestoreError("Cannot prepare output directory") from exc
+        raise RestoreError(
+            "Cannot prepare output directory", EXIT_RESTORE_DESTINATION_ERROR
+        ) from exc
 
     # Locate backup base and timestamp dir
     try:
@@ -532,14 +563,14 @@ def restore(
         ts_dir = _select_timestamp_dir(base_dir, timestamp)
     except Exception as e:
         logger.error("Failed to locate backup to restore: %s", e)
-        raise RestoreError("Backup not found") from e
+        raise RestoreError("Backup not found", EXIT_RESTORE_BACKUP_NOT_FOUND) from e
 
     # Find archive and whether encrypted
     try:
         archive_path, encrypted = _find_archive_in_ts_dir(ts_dir)
     except Exception as e:
         logger.error("No suitable archive found in %s: %s", ts_dir, e)
-        raise RestoreError("Archive not found") from e
+        raise RestoreError("Archive not found", EXIT_RESTORE_BACKUP_NOT_FOUND) from e
 
     # Check readability
     if not os.access(archive_path, os.R_OK):
@@ -566,16 +597,24 @@ def restore(
                 logger.error(
                     "Restore aborted: destination not overwritten as per policy"
                 )
-                raise RestoreError("Destination not overwritten per policy")
+                raise RestoreError(
+                    "Destination not overwritten per policy",
+                    EXIT_RESTORE_DESTINATION_ERROR,
+                )
             # clear contents
             try:
                 clear_directory_contents(output_path)
             except Exception as e:
                 logger.error("Failed to clear destination %s: %s", output_path, e)
-                raise RestoreError("Failed to prepare destination for restore") from e
+                raise RestoreError(
+                    "Failed to prepare destination for restore",
+                    EXIT_RESTORE_DESTINATION_ERROR,
+                ) from e
     except Exception as e:
         logger.error("Error while preparing destination: %s", e)
-        raise RestoreError("Destination preparation failed") from e
+        raise RestoreError(
+            "Destination preparation failed", EXIT_RESTORE_DESTINATION_ERROR
+        ) from e
 
     # Decrypt if necessary
     temp_decrypted: str | None = None

@@ -21,13 +21,29 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from cli_shared import (
+    EXIT_RENAME_COPY_FAILED,
+    EXIT_RENAME_SOURCE_MISSING,
+    EXIT_RENAME_TARGET_EXISTS,
+    EXIT_RENAME_VOLUME_IN_USE,
+    EXIT_VALIDATION,
+)
 from docker_client import DockerClient, DockerError, format_size
 
 logger = logging.getLogger("dvm")
 
 
 class RenameError(RuntimeError):
-    """Raised when a rename fails; callers should surface this to the user."""
+    """Raised when a rename fails; callers should surface this to the user.
+
+    Carries the specific CLI exit code for the failure (``code``), defaulting to
+    the generic rename-copy failure so any unannotated raise still lands in the
+    rename range.
+    """
+
+    def __init__(self, message: str, code: int = EXIT_RENAME_COPY_FAILED):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -50,15 +66,19 @@ def rename_volume(
     """Rename a Docker volume. See module docstring for the algorithm."""
 
     if source == target:
-        raise RenameError("Source and target names are identical")
+        raise RenameError("Source and target names are identical", EXIT_VALIDATION)
 
     client = client or DockerClient()
 
     try:
         if not client.volume_exists(source):
-            raise RenameError(f"Source volume {source!r} does not exist")
+            raise RenameError(
+                f"Source volume {source!r} does not exist", EXIT_RENAME_SOURCE_MISSING
+            )
         if client.volume_exists(target):
-            raise RenameError(f"Target volume {target!r} already exists")
+            raise RenameError(
+                f"Target volume {target!r} already exists", EXIT_RENAME_TARGET_EXISTS
+            )
         source_info = client.inspect_volume(source)
     except DockerError as exc:
         raise RenameError(str(exc)) from exc
@@ -67,7 +87,8 @@ def rename_volume(
         raise RenameError(
             f"Source volume {source!r} is in use by: "
             f"{', '.join(source_info.containers)}. Pass force=True to proceed "
-            "(risk of corruption if containers write during copy)."
+            "(risk of corruption if containers write during copy).",
+            EXIT_RENAME_VOLUME_IN_USE,
         )
 
     logger.info("Reading source stats for %s...", source)

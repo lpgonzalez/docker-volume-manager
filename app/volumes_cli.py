@@ -19,6 +19,9 @@ from rich.table import Table
 from cli_shared import (
     EXIT_OK,
     EXIT_VALIDATION,
+    EXIT_VOLUME_ALREADY_EXISTS,
+    EXIT_VOLUME_IN_USE,
+    EXIT_VOLUME_NOT_FOUND,
     _docker_fail,
     console,
     err_console,
@@ -127,7 +130,7 @@ def volumes_create(
     try:
         if client.volume_exists(name):
             err_console.print(f"[yellow]Volume {name!r} already exists.[/]")
-            raise typer.Exit(EXIT_VALIDATION)
+            raise typer.Exit(EXIT_VOLUME_ALREADY_EXISTS)
         info = client.create_volume(name)
     except DockerError as exc:
         _docker_fail(exc)
@@ -150,6 +153,9 @@ def volumes_remove(
     """Remove a Docker volume. Destructive — prompts unless --yes."""
     client = DockerClient()
     try:
+        if not client.volume_exists(name):
+            err_console.print(f"[bold red]Volume {name!r} not found.[/]")
+            raise typer.Exit(EXIT_VOLUME_NOT_FOUND)
         info = client.inspect_volume(name, with_size=False, with_contents=False)
     except DockerError as exc:
         _docker_fail(exc)
@@ -159,7 +165,7 @@ def volumes_remove(
             f"[bold red]Volume {name!r} is in use by:[/] {', '.join(info.containers)}\n"
             f"Pass [cyan]--force[/] to remove anyway."
         )
-        raise typer.Exit(EXIT_VALIDATION)
+        raise typer.Exit(EXIT_VOLUME_IN_USE)
 
     if not yes:
         if not sys.stdin.isatty():
@@ -199,6 +205,9 @@ def volumes_inspect(
     """Show detailed info for a Docker volume."""
     client = DockerClient()
     try:
+        if not client.volume_exists(name):
+            err_console.print(f"[bold red]Volume {name!r} not found.[/]")
+            raise typer.Exit(EXIT_VOLUME_NOT_FOUND)
         with console.status(f"[bold blue]Inspecting {name}...", spinner="dots"):
             info = client.inspect_volume(
                 name,

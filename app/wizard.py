@@ -19,6 +19,8 @@ import typer
 from rich.panel import Panel
 from rich.prompt import Confirm, IntPrompt, Prompt
 
+import completion
+import wizard_ui
 from cli_shared import (
     COMPRESSION_CHOICES,
     EXIT_VALIDATION,
@@ -30,6 +32,12 @@ from cli_shared import (
 from docker_client import DockerClient, DockerError, VolumeInfo, format_size
 from runners import _run_backup, _run_copy, _run_restore, _run_verify
 from volumes_cli import _render_volume_details, _render_volume_table
+from wizard_store import BackupStore, LocalDirStore, VolumeStore
+
+# Choice lists shared between rich's validation and TAB completion.
+_OPERATIONS = ["backup", "restore", "verify", "copy", "rename", "volumes", "quit"]
+_VOLUME_ACTIONS = ["list", "inspect", "create", "rename", "remove", "quit"]
+_LOG_OUTPUTS = ["console", "file", "json_file"]
 
 
 def _ensure_tty() -> None:
@@ -41,65 +49,136 @@ def _ensure_tty() -> None:
         raise typer.Exit(EXIT_VALIDATION)
 
 
-def _wizard_path_or_volume(
+def _wizard_location(
     label: str,
     default_path: str,
     *,
     purpose: str,
-) -> tuple[str, str | None]:
-    """Ask whether input/output is a bind-mount path or a Docker volume.
+) -> tuple[str, str | None, BackupStore]:
+    """Pick the location first: a bind-mount path or a Docker volume.
 
-    Returns (path, volume_name). When the user picks a volume, path is the
-    default /app/* placeholder (the pivot will override it).
+    Returns ``(path, volume_name, store)``. ``store`` lets the caller list and
+    validate backups uniformly (``LocalDirStore`` for a path, ``VolumeStore`` for
+    a volume). For a volume, ``path`` is the ``/app/*`` placeholder the pivot
+    overrides; ``volume_name`` is None for a path.
     """
-    use_volume = Confirm.ask(f"Use a Docker volume as {purpose}?", default=False)
-    if not use_volume:
-        return Prompt.ask(label, default=default_path), None
+    if Confirm.ask(f"Use a Docker volume as {purpose}?", default=False):
+        store = _wizard_volume_location(purpose)
+        if store is not None:
+            return default_path, store.volume, store
+        # Socket unavailable / no volumes / cancelled → fall back to path entry.
 
+    path = completion.ask(label, completion.paths(), default=default_path)
+    return path, None, LocalDirStore(path)
+
+
+def _wizard_volume_location(purpose: str) -> VolumeStore | None:
+    """Pick a Docker volume by number or name (paged). None to fall back to a path."""
     client = DockerClient()
     if not client.ping():
         err_console.print(
             "[yellow]Docker socket unavailable — falling back to path entry.[/]"
         )
-        return Prompt.ask(label, default=default_path), None
-
+        return None
     try:
         volumes = client.list_volumes()
     except DockerError as exc:
         err_console.print(f"[red]{exc}[/]")
-        return Prompt.ask(label, default=default_path), None
-
-    if volumes:
-        _render_volume_table(volumes, show_size=False)
-    else:
-        console.print("[yellow]No Docker volumes found.[/]")
-
-    by_name = {v.name: v for v in volumes}
-    while True:
-        choice = Prompt.ask(
-            f"Volume for {purpose} — [cyan]#[/] or [cyan]name[/] (blank to type a path)",
-            default="",
-        ).strip()
-        if not choice:
-            return Prompt.ask(label, default=default_path), None
-        if choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(volumes):
-                return default_path, volumes[idx].name
-        elif choice in by_name:
-            return default_path, choice
-        err_console.print(
-            f"[red]No volume matches {choice!r}. Try again or leave blank.[/]"
+        return None
+    if not volumes:
+        console.print(
+            "[yellow]No Docker volumes found — falling back to path entry.[/]"
         )
+        return None
+
+    info = {v.name: v for v in volumes}
+    names = sorted(info)
+
+    def note(name: str) -> str:
+        v = info[name]
+        return "in use: " + ", ".join(v.containers) if v.containers else "orphan"
+
+    picked = wizard_ui.select_paged(
+        f"Volume for {purpose} (blank to type a path instead)",
+        names,
+        note_fn=note,
+        title="Docker volumes",
+    )
+    if not picked:
+        return None
+    return VolumeStore(picked, client)
+
+
+def _wizard_pick_existing_backup(store: BackupStore) -> tuple[str | None, str | None]:
+    """Pick an existing backup (name + timestamp) from ``store``, validating each step.
+
+    Returns ``(name, timestamp)``, or ``(None, None)`` when there's nothing to
+    pick or the user cancels. Used by restore and verify.
+    """
+    names = store.list_names()
+    if not names:
+        err_console.print(f"[yellow]No backups found in {store.label}.[/]")
+        return None, None
+
+    while True:
+        name = wizard_ui.select_paged(
+            "Backup base name", names, title=f"Backups in {store.label}"
+        )
+        if name is None:
+            return None, None
+        timestamps = store.list_timestamps(name)
+        if not timestamps:
+            err_console.print(
+                f"[red]{name!r} contains no dated backups — pick another.[/]"
+            )
+            continue
+        ts = wizard_ui.select_paged(
+            "Backup timestamp",
+            timestamps,
+            default=timestamps[0],
+            note_fn=lambda t, _latest=timestamps[0]: "latest" if t == _latest else "",
+            title=f"Timestamps for {name}",
+        )
+        if ts is None:
+            ts = timestamps[0]
+        if not store.has_archive(name, ts):
+            err_console.print(
+                f"[red]No backup archive inside {name}/{ts} — pick another.[/]"
+            )
+            continue
+        return name, ts
+
+
+def _wizard_new_backup_name(store: BackupStore) -> str:
+    """Prompt for a backup name (new or existing) — existing names are listed."""
+    existing = store.list_names()
+    if existing:
+        console.print(
+            f"[dim]Existing names in {store.label} are listed — reuse one to add a "
+            "new dated backup, or type a fresh name.[/]"
+        )
+    while True:
+        name = wizard_ui.select_paged(
+            "Backup base name (new or existing)",
+            existing,
+            allow_custom=True,
+            title=(f"Existing backups in {store.label}" if existing else None),
+        )
+        if name:
+            return name
+        err_console.print("[red]A backup name is required.[/]")
 
 
 def _wizard_common() -> tuple[str, list[str]]:
-    log_level = Prompt.ask(
-        "Log level", choices=[c.lower() for c in LOG_LEVEL_CHOICES], default="info"
+    levels = [c.lower() for c in LOG_LEVEL_CHOICES]
+    log_level = completion.ask(
+        "Log level", completion.words(levels), choices=levels, default="info"
     ).upper()
     while True:
-        raw = Prompt.ask(
-            "Log outputs (comma-separated: console, file, json_file)", default="console"
+        raw = completion.ask(
+            "Log outputs (comma-separated: console, file, json_file)",
+            completion.csv_words(_LOG_OUTPUTS),
+            default="console",
         )
         try:
             return log_level, _parse_log_output(raw)
@@ -121,17 +200,10 @@ def run_interactive() -> None:
 
     while True:
         try:
-            op = Prompt.ask(
+            op = completion.ask(
                 "\nSelect operation",
-                choices=[
-                    "backup",
-                    "restore",
-                    "verify",
-                    "copy",
-                    "rename",
-                    "volumes",
-                    "quit",
-                ],
+                completion.words(_OPERATIONS),
+                choices=_OPERATIONS,
                 default="backup",
             ).lower()
 
@@ -170,9 +242,11 @@ def run_interactive() -> None:
 
 def _wizard_encryption_choice() -> tuple[str | None, list[str]]:
     """Ask for encryption mode and return (passphrase, recipients)."""
-    mode = Prompt.ask(
+    enc_modes = ["none", "passphrase", "recipients"]
+    mode = completion.ask(
         "Encryption",
-        choices=["none", "passphrase", "recipients"],
+        completion.words(enc_modes),
+        choices=enc_modes,
         default="none",
     ).lower()
     if mode == "none":
@@ -188,16 +262,26 @@ def _wizard_encryption_choice() -> tuple[str | None, list[str]]:
 
 
 def _wizard_run_backup() -> None:
-    name = Prompt.ask("Backup base name")
-    input_path, input_volume = _wizard_path_or_volume(
-        "Source path", "/app/input_dir", purpose="source"
+    input_path, input_volume, _ = _wizard_location(
+        "Source path (the data to back up)", "/app/input_dir", purpose="source"
     )
-    output_path, output_volume = _wizard_path_or_volume(
-        "Destination path", "/app/output_dir", purpose="destination"
+    output_path, output_volume, dest_store = _wizard_location(
+        "Destination path (where the backup is written)",
+        "/app/output_dir",
+        purpose="destination",
     )
-    compression = Prompt.ask(
+    if not dest_store.is_writable():
+        err_console.print(
+            f"[bold red]Destination {dest_store.label} is not writable.[/] "
+            "Choose another destination."
+        )
+        return
+    name = _wizard_new_backup_name(dest_store)
+    comp_choices = [c.lower() for c in COMPRESSION_CHOICES]
+    compression = completion.ask(
         "Compression algorithm",
-        choices=[c.lower() for c in COMPRESSION_CHOICES],
+        completion.words(comp_choices),
+        choices=comp_choices,
         default="zstd",
     ).upper()
     parity = IntPrompt.ask("Parity percentage (0-100, 0 disables)", default=0)
@@ -230,18 +314,19 @@ def _wizard_run_restore() -> None:
         "lives — the dir that contains [bold]<name>/<timestamp>/…[/] (e.g. the dir you "
         "backed up to). Source and destination must differ.[/]"
     )
-    name = Prompt.ask("Backup base name")
-    input_path, input_volume = _wizard_path_or_volume(
+    input_path, input_volume, src_store = _wizard_location(
         "Backup source dir (holds <name>/<timestamp>/)",
         "/app/input_dir",
         purpose="backup source (where the backup is stored)",
     )
-    output_path, output_volume = _wizard_path_or_volume(
+    name, timestamp = _wizard_pick_existing_backup(src_store)
+    if name is None:
+        return
+    output_path, output_volume, _ = _wizard_location(
         "Restore destination dir (where files are written)",
         "/app/output_dir",
         purpose="restore destination",
     )
-    timestamp = Prompt.ask("Timestamp (blank = latest)", default="") or None
     encrypted = Confirm.ask("Is the backup encrypted?", default=False)
     encryption_key = (
         Prompt.ask(
@@ -271,30 +356,45 @@ def _wizard_run_restore() -> None:
 
 
 def _wizard_run_verify() -> None:
-    name = Prompt.ask("Backup base name")
-    output_path, output_volume = _wizard_path_or_volume(
+    output_path, output_volume, store = _wizard_location(
         "Backup directory", "/app/output_dir", purpose="backup location"
     )
+    name, timestamp = _wizard_pick_existing_backup(store)
+    if name is None:
+        return
     encrypted = Confirm.ask("Is the backup encrypted?", default=False)
     encryption_key = Prompt.ask("Passphrase", password=True) if encrypted else None
+    repair = Confirm.ask(
+        "Auto-repair the backup in place if it is damaged but recoverable? "
+        "(answer no for a read-only audit that never modifies the file)",
+        default=True,
+    )
     log_level, log_output_list = _wizard_common()
     _run_verify(
         name=name,
         output_path=output_path,
         encryption_key=encryption_key,
         output_volume=output_volume,
+        timestamp=timestamp,
+        repair=repair,
         log_level=log_level,
         log_output=log_output_list,
     )
 
 
 def _wizard_run_copy() -> None:
-    input_path, input_volume = _wizard_path_or_volume(
+    input_path, input_volume, _ = _wizard_location(
         "Source path", "/app/input_dir", purpose="source"
     )
-    output_path, output_volume = _wizard_path_or_volume(
+    output_path, output_volume, dest_store = _wizard_location(
         "Destination path", "/app/output_dir", purpose="destination"
     )
+    if not dest_store.is_writable():
+        err_console.print(
+            f"[bold red]Destination {dest_store.label} is not writable.[/] "
+            "Choose another destination."
+        )
+        return
     overwrite = Confirm.ask("Overwrite destination contents?", default=True)
     log_level, log_output_list = _wizard_common()
     _run_copy(
@@ -319,9 +419,10 @@ def _wizard_volumes() -> None:
         return
 
     while True:
-        action = Prompt.ask(
+        action = completion.ask(
             "\nVolume action",
-            choices=["list", "inspect", "create", "rename", "remove", "quit"],
+            completion.words(_VOLUME_ACTIONS),
+            choices=_VOLUME_ACTIONS,
             default="list",
         ).lower()
         if action in {"quit", "q"}:
@@ -345,7 +446,7 @@ def _pick_volume(volumes: list[VolumeInfo], prompt: str) -> VolumeInfo | None:
     caller decides what that means (cancel, abort, re-prompt, ...).
     """
     by_name = {v.name: v for v in volumes}
-    choice = Prompt.ask(prompt, default="").strip()
+    choice = completion.ask(prompt, completion.words(by_name), default="").strip()
     if not choice:
         return None
     if choice.isdigit():

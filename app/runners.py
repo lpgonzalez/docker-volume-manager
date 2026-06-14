@@ -19,6 +19,7 @@ from cli_shared import (
     EXIT_OPERATION,
     EXIT_UNHANDLED,
     EXIT_VALIDATION,
+    OperationError,
     _update_status,
     err_console,
 )
@@ -52,6 +53,11 @@ def _run_operation(cfg: Config) -> None:
 
     try:
         success = Docker_Volume_Manager(cfg).run()
+    except OperationError as exc:
+        # Typed failure: map straight to its specific exit code.
+        logger.error("%s failed (exit %s): %s", op, exc.code, exc.message)
+        _update_status("unhealthy")
+        raise typer.Exit(exc.code) from None
     except KeyboardInterrupt:
         logger.warning("Operation aborted by user: %s", op)
         _update_status("unhealthy")
@@ -66,6 +72,7 @@ def _run_operation(cfg: Config) -> None:
         _update_status("healthy")
         raise typer.Exit(EXIT_OK)
 
+    # No typed error but the operation reported a falsey result — generic failure.
     logger.error("Operation reported failure: %s", op)
     _update_status("unhealthy")
     raise typer.Exit(EXIT_OPERATION)
@@ -181,6 +188,8 @@ def _run_verify(
     output_path: str,
     encryption_key: str | None,
     output_volume: str | None = None,
+    timestamp: str | None = None,
+    repair: bool = True,
     log_level: str,
     log_output: list[str],
 ) -> None:
@@ -190,18 +199,23 @@ def _run_verify(
             "BACKUP_FILE_NAME": name,
             "OUTPUT_PATH": output_path,
             "ENCRYPTION_KEY": encryption_key,
+            "TIMESTAMP": timestamp,
+            "REPAIR": "Y" if repair else "N",
             "LOG_LEVEL": log_level,
             "LOG_OUTPUT": ",".join(log_output),
         },
         input_volume=None,
         output_volume=output_volume,
-        output_mode="rw",
+        # Read-only verify only needs ro; repair must write back to the volume.
+        output_mode="rw" if repair else "ro",
     )
     cfg = _build_config(
         OPERATION="VERIFY",
         BACKUP_FILE_NAME=name,
         OUTPUT_PATH=output_path,
         ENCRYPTION_KEY=encryption_key or "",
+        TIMESTAMP=timestamp,
+        REPAIR=repair,
         LOG_LEVEL=log_level,
         LOG_OUTPUT=log_output,
     )

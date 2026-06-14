@@ -141,6 +141,7 @@ class Config:
     SIGN_KEY_PASSPHRASE: str = ""
     TIMESTAMP: str | None = None
     COPY_OVERWRITE: bool = True
+    REPAIR: bool = True
     LOG_LEVEL: str = "INFO"
     LOG_OUTPUT: list[str] = field(default_factory=lambda: ["console"])
     LOGS_PATH: str | None = "/app/logs"
@@ -199,6 +200,7 @@ class Config:
             )
         self.TIMESTAMP = self.TIMESTAMP or None
         self.COPY_OVERWRITE = bool(self.COPY_OVERWRITE)
+        self.REPAIR = bool(self.REPAIR)
         self.USE_COLORS = bool(self.USE_COLORS)
 
         if self.LOGS_PATH:
@@ -250,6 +252,7 @@ class Config:
             SIGN_KEY_PASSPHRASE=pick("SIGN_KEY_PASSPHRASE", ""),
             TIMESTAMP=pick("TIMESTAMP", None) or None,
             COPY_OVERWRITE=_parse_bool(pick("COPY_OVERWRITE", "Y"), True),
+            REPAIR=_parse_bool(pick("REPAIR", "Y"), True),
             LOG_LEVEL=pick("LOG_LEVEL", "INFO"),
             LOG_OUTPUT=log_output,
             LOGS_PATH=pick("LOGS_PATH", "/app/logs"),

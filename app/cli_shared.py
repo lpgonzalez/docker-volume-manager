@@ -22,11 +22,71 @@ COMPRESSION_CHOICES = sorted(VALID_COMPRESSION)
 LOG_LEVEL_CHOICES = sorted(VALID_LOG_LEVELS)
 
 # Typed exit codes — the container's contract with orchestration / health checks.
+#
+# Layout: 0-3 are generic framework codes; operation failures use per-operation
+# ranges where the tens digit identifies the operation and the units the reason
+# (BACKUP 1x, RESTORE 2x, VERIFY 3x, COPY 4x, RENAME 5x, VOLUMES 6x). EXIT_OK
+# means success (verify: intact OR auto-repaired). EXIT_OPERATION stays as a
+# generic operation-failure fallback for anything not mapped to a specific code.
 EXIT_OK = 0
 EXIT_UNHANDLED = 1
 EXIT_VALIDATION = 2
 EXIT_CONFIG = 3
-EXIT_OPERATION = 4
+EXIT_OPERATION = 4  # generic operation failure (fallback)
+
+# BACKUP 10-19
+EXIT_BACKUP_INPUT_NOT_FOUND = 10
+EXIT_BACKUP_OUTPUT_NOT_WRITABLE = 11
+EXIT_BACKUP_COMPRESSION_FAILED = 12
+EXIT_BACKUP_ENCRYPTION_FAILED = 13
+
+# RESTORE 20-29
+EXIT_RESTORE_BACKUP_NOT_FOUND = 20
+EXIT_RESTORE_DECRYPT_FAILED = 21
+EXIT_RESTORE_ARCHIVE_CORRUPT = 22
+EXIT_RESTORE_PARITY_REPAIR_FAILED = 23
+EXIT_RESTORE_UNSAFE_ARCHIVE = 24
+EXIT_RESTORE_DESTINATION_ERROR = 25
+
+# VERIFY 30-39
+EXIT_VERIFY_UNREPAIRABLE = 30
+EXIT_VERIFY_CORRUPT_REPAIRABLE = 31
+EXIT_VERIFY_REPAIR_FAILED = 32
+EXIT_VERIFY_DECRYPT_FAILED = 33
+EXIT_VERIFY_DAMAGED = 34
+EXIT_VERIFY_BACKUP_MISSING = 35
+
+# COPY 40-49
+EXIT_COPY_INPUT_NOT_FOUND = 40
+EXIT_COPY_OUTPUT_NOT_WRITABLE = 41
+EXIT_COPY_OVERWRITE_REFUSED = 42
+
+# RENAME 50-59
+EXIT_RENAME_SOURCE_MISSING = 50
+EXIT_RENAME_TARGET_EXISTS = 51
+EXIT_RENAME_VOLUME_IN_USE = 52
+EXIT_RENAME_COPY_FAILED = 53
+
+# VOLUMES 60-69
+EXIT_VOLUME_NOT_FOUND = 60
+EXIT_VOLUME_ALREADY_EXISTS = 61
+EXIT_VOLUME_IN_USE = 62
+
+
+class OperationError(Exception):
+    """Raised by an operation to signal a specific, typed failure.
+
+    Carries the exit code the CLI should terminate with (one of the
+    ``EXIT_*`` constants) plus a human-readable message. The central runner
+    catches this and maps ``code`` straight to ``typer.Exit`` so each distinct
+    failure mode surfaces as its own process exit code.
+    """
+
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
 
 STATUS_FILE = "/dev/shm/app_status.txt"
 

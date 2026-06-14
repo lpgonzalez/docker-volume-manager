@@ -8,6 +8,22 @@ Docker_Volume_Manager: orchestrates operations BACKUP, RESTORE, VERIFY, COPY
 import logging
 import os
 
+from cli_shared import (
+    EXIT_BACKUP_COMPRESSION_FAILED,
+    EXIT_BACKUP_ENCRYPTION_FAILED,
+    EXIT_BACKUP_INPUT_NOT_FOUND,
+    EXIT_BACKUP_OUTPUT_NOT_WRITABLE,
+    EXIT_COPY_INPUT_NOT_FOUND,
+    EXIT_COPY_OUTPUT_NOT_WRITABLE,
+    EXIT_COPY_OVERWRITE_REFUSED,
+    EXIT_VERIFY_BACKUP_MISSING,
+    EXIT_VERIFY_CORRUPT_REPAIRABLE,
+    EXIT_VERIFY_DAMAGED,
+    EXIT_VERIFY_DECRYPT_FAILED,
+    EXIT_VERIFY_REPAIR_FAILED,
+    EXIT_VERIFY_UNREPAIRABLE,
+    OperationError,
+)
 from config import Config
 from operations import codecs
 from operations.backup_files import BackupManager
@@ -17,6 +33,18 @@ from operations.restore_files import restore as restore_backup
 from operations.verify_backup import BackupVerifier
 
 logger = logging.getLogger("dvm")
+
+# Maps a verify outcome code (see _classify_outcome) to its process exit code.
+# Healthy outcomes (INTACT / INTACT_NO_PARITY / REPAIRED) never reach this map.
+_VERIFY_OUTCOME_EXIT = {
+    "CORRUPT_UNREPAIRABLE": EXIT_VERIFY_UNREPAIRABLE,
+    "CORRUPT_REPAIRABLE": EXIT_VERIFY_CORRUPT_REPAIRABLE,
+    "REPAIR_FAILED": EXIT_VERIFY_REPAIR_FAILED,
+    "DECRYPT_FAILED": EXIT_VERIFY_DECRYPT_FAILED,
+    "DAMAGED_NO_PARITY": EXIT_VERIFY_DAMAGED,
+    "DECOMPRESS_FAILED": EXIT_VERIFY_DAMAGED,
+    "BACKUP_MISSING": EXIT_VERIFY_BACKUP_MISSING,
+}
 
 
 def _operation_extras(
@@ -64,6 +92,9 @@ class Docker_Volume_Manager:
             else:
                 self.logger.error("Invalid operation specified: %s", op)
                 return False
+        except OperationError:
+            # Typed failures carry their own exit code — let the runner map them.
+            raise
         except Exception:
             self.logger.exception("Unhandled exception in run()")
             return False
@@ -98,20 +129,18 @@ class Docker_Volume_Manager:
                 self.logger.info("Starting backup without parity")
 
             if not os.path.isdir(self.config.INPUT_PATH):
-                self.logger.error(
-                    "Input path does not exist or is not a directory: %s",
-                    self.config.INPUT_PATH,
+                raise OperationError(
+                    EXIT_BACKUP_INPUT_NOT_FOUND,
+                    f"Input path does not exist or is not a directory: "
+                    f"{self.config.INPUT_PATH}",
                 )
-                return False
             try:
                 os.makedirs(self.config.OUTPUT_PATH, exist_ok=True)
             except Exception as e:
-                self.logger.error(
-                    "Unable to ensure output directory %s: %s",
-                    self.config.OUTPUT_PATH,
-                    e,
-                )
-                return False
+                raise OperationError(
+                    EXIT_BACKUP_OUTPUT_NOT_WRITABLE,
+                    f"Unable to ensure output directory {self.config.OUTPUT_PATH}: {e}",
+                ) from e
 
             manager = BackupManager(
                 vol_name=self.config.BACKUP_FILE_NAME,
@@ -131,18 +160,43 @@ class Docker_Volume_Manager:
             )
 
             backup_file = None
-            if self.config.ENCRYPTION_KEY or gpg_recipients:
-                mode = "symmetric" if self.config.ENCRYPTION_KEY else "public-key"
-                self.logger.info("Encryption enabled for backup (%s).", mode)
-                backup_file = manager.compress_and_encrypt_pipeline()
-            else:
-                self.logger.warning(
-                    "Encryption disabled; producing unencrypted backup."
-                )
-                backup_file = manager.compress()
-                if create_parity:
-                    self.logger.info("Creating parity files for unencrypted backup.")
-                    manager.create_parity_file(backup_file, self.config.PARITY)
+            try:
+                if self.config.ENCRYPTION_KEY or gpg_recipients:
+                    mode = "symmetric" if self.config.ENCRYPTION_KEY else "public-key"
+                    self.logger.info("Encryption enabled for backup (%s).", mode)
+                    backup_file = manager.compress_and_encrypt_pipeline()
+                else:
+                    self.logger.warning(
+                        "Encryption disabled; producing unencrypted backup."
+                    )
+                    backup_file = manager.compress()
+                    if create_parity:
+                        self.logger.info(
+                            "Creating parity files for unencrypted backup."
+                        )
+                        manager.create_parity_file(backup_file, self.config.PARITY)
+            except FileNotFoundError as exc:
+                raise OperationError(
+                    EXIT_BACKUP_INPUT_NOT_FOUND, f"Backup input not found: {exc}"
+                ) from exc
+            except PermissionError as exc:
+                raise OperationError(
+                    EXIT_BACKUP_OUTPUT_NOT_WRITABLE,
+                    f"Backup output not writable: {exc}",
+                ) from exc
+            except Exception as exc:
+                # tar | compressor | gpg pipeline (or parity) failed. A gpg-stage
+                # failure is an encryption problem; everything else is archive
+                # production.
+                if "gpg" in str(exc).lower():
+                    raise OperationError(
+                        EXIT_BACKUP_ENCRYPTION_FAILED,
+                        f"Backup encryption failed: {exc}",
+                    ) from exc
+                raise OperationError(
+                    EXIT_BACKUP_COMPRESSION_FAILED,
+                    f"Backup archive production failed: {exc}",
+                ) from exc
 
             # Detached signature is the final step: it covers whatever the
             # pipeline produced (encrypted-or-not), so a verifier with the
@@ -152,10 +206,10 @@ class Docker_Volume_Manager:
                 try:
                     sig_file = manager.sign_archive(backup_file)
                 except Exception as exc:
-                    self.logger.exception(
-                        "Detached signature failed for %s: %s", backup_file, exc
-                    )
-                    return False
+                    raise OperationError(
+                        EXIT_BACKUP_ENCRYPTION_FAILED,
+                        f"Detached signature failed for {backup_file}: {exc}",
+                    ) from exc
 
             self.logger.info(
                 "Operation completed successfully: BACKUP%s - %s%s",
@@ -164,6 +218,8 @@ class Docker_Volume_Manager:
                 f" (+ signature: {sig_file})" if sig_file else "",
             )
             return True
+        except OperationError:
+            raise
         except Exception:
             self.logger.exception("Backup failed due to unexpected error")
             return False
@@ -175,21 +231,19 @@ class Docker_Volume_Manager:
             self.logger.info("Starting operation: COPY")
 
             if not os.path.isdir(self.config.INPUT_PATH):
-                self.logger.error(
-                    "Input path does not exist or is not a directory: %s",
-                    self.config.INPUT_PATH,
+                raise OperationError(
+                    EXIT_COPY_INPUT_NOT_FOUND,
+                    f"Input path does not exist or is not a directory: "
+                    f"{self.config.INPUT_PATH}",
                 )
-                return False
             try:
-                # Ensure output exists; CopyManager will validate writability and handle clearing
+                # Ensure output exists; CopyManager validates writability + clearing.
                 os.makedirs(self.config.OUTPUT_PATH, exist_ok=True)
             except Exception as e:
-                self.logger.error(
-                    "Unable to ensure output directory %s: %s",
-                    self.config.OUTPUT_PATH,
-                    e,
-                )
-                return False
+                raise OperationError(
+                    EXIT_COPY_OUTPUT_NOT_WRITABLE,
+                    f"Unable to ensure output directory {self.config.OUTPUT_PATH}: {e}",
+                ) from e
 
             copier = CopyManager(
                 input_path=self.config.INPUT_PATH,
@@ -197,15 +251,30 @@ class Docker_Volume_Manager:
                 overwrite=self.config.COPY_OVERWRITE,
             )
 
-            # Perform copy; CopyManager will ask/decide about overwriting destination contents.
-            dest_dir = copier.copy()
+            # Perform copy; CopyManager asks/decides about overwriting destination.
+            try:
+                dest_dir = copier.copy()
+            except (FileNotFoundError, ValueError) as exc:
+                raise OperationError(
+                    EXIT_COPY_INPUT_NOT_FOUND, f"Copy source problem: {exc}"
+                ) from exc
+            except PermissionError as exc:
+                msg = str(exc).lower()
+                if "not writable" in msg:
+                    raise OperationError(
+                        EXIT_COPY_OUTPUT_NOT_WRITABLE,
+                        f"Copy destination not writable: {exc}",
+                    ) from exc
+                # Overwrite declined by policy / user.
+                raise OperationError(
+                    EXIT_COPY_OVERWRITE_REFUSED,
+                    f"Copy destination not overwritten: {exc}",
+                ) from exc
 
             self.logger.info("Operation completed successfully: COPY - %s", dest_dir)
             return True
-        except PermissionError as pe:
-            # user aborted or permission issues
-            self.logger.error("Copy aborted: %s", pe)
-            return False
+        except OperationError:
+            raise
         except Exception:
             self.logger.exception("Copy operation failed")
             return False
@@ -249,9 +318,15 @@ class Docker_Volume_Manager:
                 "Restore operation finished successfully -> %s", restored_path
             )
             return True
+        except OperationError:
+            raise
         except RestoreError as re:
-            self.logger.error("Restore failed: %s", re)
-            return False
+            # RestoreError carries the specific exit code for its failure mode.
+            from cli_shared import EXIT_OPERATION
+
+            raise OperationError(
+                getattr(re, "code", EXIT_OPERATION), f"Restore failed: {re}"
+            ) from re
         except Exception:
             self.logger.exception("Restore operation failed unexpectedly")
             return False
@@ -283,47 +358,128 @@ class Docker_Volume_Manager:
                 ts_dir = _select_timestamp_dir(base_dir, timestamp)
                 backup_path, _encrypted = _find_archive_in_ts_dir(ts_dir)
             except FileNotFoundError as exc:
-                self.logger.error("No backup found to verify: %s", exc)
-                return False
+                raise OperationError(
+                    EXIT_VERIFY_BACKUP_MISSING, f"No backup found to verify: {exc}"
+                ) from exc
             self.logger.info("Selected backup for verification: %s", backup_path)
 
             password = getattr(self.config, "ENCRYPTION_KEY", "") or ""
-            verifier = BackupVerifier(backup_path, password=password)
+            # Auto-repair is the default: par2 exists to recover, so a recoverable
+            # archive is fixed in place unless the caller passed --no-repair.
+            repair = bool(getattr(self.config, "REPAIR", True))
+            verifier = BackupVerifier(backup_path, password=password, repair=repair)
             report: dict[str, object] = verifier.verify_all()
 
             self.print_verification_summary(report)
             for key, value in report.items():
                 self.logger.info("verify.%s = %s", key, value)
 
-            healthy = True
-            if not report.get("backup_exists", False):
-                self.logger.error("Backup file does not exist: %s", backup_path)
-                healthy = False
-            if report.get("is_encrypted") and not report.get("can_decrypt", True):
-                self.logger.error(
-                    "Backup is encrypted but cannot be decrypted with provided key."
-                )
-                healthy = False
-            if not report.get("can_decompress", True):
-                self.logger.error("Backup cannot be decompressed.")
-                healthy = False
-            if report.get("parity_files_exist", False):
-                if not report.get("parity_valid", True):
-                    if report.get("parity_recovered", False):
-                        self.logger.warning("Parity invalid but recovery succeeded.")
-                    else:
-                        self.logger.error("Parity invalid and recovery failed.")
-                        healthy = False
-                else:
-                    self.logger.info("Parity files present and valid.")
-            else:
-                self.logger.info("No parity files present for this backup.")
-
-            self.logger.info("Verification completed (healthy=%s)", healthy)
-            return healthy
+            outcome, healthy, message, level = self._classify_outcome(report, repair)
+            getattr(self.logger, level, self.logger.info)(message)
+            self.logger.info("verify.outcome = %s", outcome)
+            self.logger.info(
+                "Verification completed (outcome=%s, healthy=%s)", outcome, healthy
+            )
+            if not healthy:
+                raise OperationError(_VERIFY_OUTCOME_EXIT.get(outcome, 4), message)
+            return True
+        except OperationError:
+            raise
         except Exception:
             self.logger.exception("Backup verification failed unexpectedly")
             return False
+
+    def _classify_outcome(
+        self, report: dict[str, object], repair: bool
+    ) -> tuple[str, bool, str, str]:
+        """Reduce the verification report to a single named outcome.
+
+        Returns ``(outcome, healthy, message, log_level)``. ``outcome`` is a
+        stable code (see README) modelling every terminal state — intact,
+        repaired, or one of the distinct failure modes — so the operator always
+        knows exactly what happened and whether the backup file was modified.
+        """
+        if not report.get("backup_exists", False):
+            return (
+                "BACKUP_MISSING",
+                False,
+                "Backup file not found — nothing to verify.",
+                "error",
+            )
+
+        if report.get("is_encrypted") and not report.get("can_decrypt", True):
+            return (
+                "DECRYPT_FAILED",
+                False,
+                "Backup is encrypted but cannot be decrypted with the provided "
+                "key — integrity could not be checked.",
+                "error",
+            )
+
+        parity_valid = report.get("parity_valid")
+        repairable = report.get("parity_repairable")
+        recovered = report.get("parity_recovered")
+        can_decompress = report.get("can_decompress", True)
+
+        if report.get("parity_files_exist", False):
+            if parity_valid:
+                if not can_decompress:
+                    return (
+                        "DECOMPRESS_FAILED",
+                        False,
+                        "Parity reports the archive intact, yet it does not "
+                        "decompress — it may be truncated beyond par2's coverage.",
+                        "error",
+                    )
+                return ("INTACT", True, "Backup is intact (parity valid).", "info")
+            # Parity invalid → the archive is corrupt.
+            if recovered:
+                return (
+                    "REPAIRED",
+                    True,
+                    "Backup was CORRUPT and has been REPAIRED in place with par2. "
+                    "The backup file was MODIFIED and is valid again.",
+                    "warning",
+                )
+            if repair and repairable and not recovered:
+                return (
+                    "REPAIR_FAILED",
+                    False,
+                    "Backup is CORRUPT and looked recoverable, but par2 repair "
+                    "FAILED. The backup file is still damaged.",
+                    "error",
+                )
+            if repairable:
+                return (
+                    "CORRUPT_REPAIRABLE",
+                    False,
+                    "Backup is CORRUPT but RECOVERABLE. Repair is disabled "
+                    "(--no-repair) — re-run without it to fix the file in place.",
+                    "error",
+                )
+            return (
+                "CORRUPT_UNREPAIRABLE",
+                False,
+                "Backup is CORRUPT and CANNOT be repaired — the damage exceeds "
+                "the PAR2 redundancy. This is data loss; restore from another copy.",
+                "error",
+            )
+
+        # No parity files: integrity rests entirely on decompression.
+        if not can_decompress:
+            return (
+                "DAMAGED_NO_PARITY",
+                False,
+                "Backup cannot be decompressed and has no PAR2 parity to recover "
+                "from — it is unusable.",
+                "error",
+            )
+        return (
+            "INTACT_NO_PARITY",
+            True,
+            "Backup is readable (no parity files present to protect it).",
+            "info",
+        )
 
     def print_verification_summary(self, report: dict[str, object]) -> None:
         use_colors = bool(getattr(self.config, "USE_COLORS", True))
@@ -345,15 +501,24 @@ class Docker_Volume_Manager:
             print(f"Is encrypted:          {status(report.get('is_encrypted'))}")
             print(f"Can decrypt:           {status(report.get('can_decrypt'))}")
             print(f"Can decompress:        {status(report.get('can_decompress'))}")
-            if "parity_files_exist" in report:
-                print(
-                    f"Parity files exist:    {status(report.get('parity_files_exist'))}"
-                )
+            if report.get("parity_files_exist"):
+                print(f"Parity files exist:    {OK}")
                 print(f"Parity valid:          {status(report.get('parity_valid'))}")
                 if report.get("parity_valid") is False:
                     print(
-                        f"Parity recovered:      {status(report.get('parity_recovered'))}"
+                        f"Parity repairable:     {status(report.get('parity_repairable'))}"
                     )
+                    # Only meaningful once a repair was actually attempted.
+                    if report.get("parity_recovered") is not None:
+                        print(
+                            f"Parity recovered:      {status(report.get('parity_recovered'))}"
+                        )
+                    elif report.get("parity_repairable"):
+                        print(
+                            "                       → re-run without --no-repair to fix"
+                        )
+            else:
+                print("Parity files exist:    (none)")
             print("========================================\n")
         except Exception:
             self.logger.exception("Failed to print verification summary")

@@ -6,6 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from cli_shared import (
+    EXIT_RENAME_COPY_FAILED,
+    EXIT_RENAME_SOURCE_MISSING,
+    EXIT_RENAME_TARGET_EXISTS,
+    EXIT_RENAME_VOLUME_IN_USE,
+    EXIT_VALIDATION,
+)
 from docker_client import DockerClient, DockerUnavailable, VolumeInfo
 from operations.rename_volume import RenameError, rename_volume
 
@@ -88,26 +95,30 @@ class TestKeepSource:
 class TestValidation:
     def test_source_equals_target(self):
         client = MagicMock(spec=DockerClient)
-        with pytest.raises(RenameError, match="identical"):
+        with pytest.raises(RenameError, match="identical") as exc:
             rename_volume("same", "same", client=client)
+        assert exc.value.code == EXIT_VALIDATION
         client.create_volume.assert_not_called()
 
     def test_missing_source(self):
         client = _make_client(source_exists=False)
-        with pytest.raises(RenameError, match="does not exist"):
+        with pytest.raises(RenameError, match="does not exist") as exc:
             rename_volume("src", "dst", client=client)
+        assert exc.value.code == EXIT_RENAME_SOURCE_MISSING
         client.create_volume.assert_not_called()
 
     def test_existing_target(self):
         client = _make_client(target_exists=True)
-        with pytest.raises(RenameError, match="already exists"):
+        with pytest.raises(RenameError, match="already exists") as exc:
             rename_volume("src", "dst", client=client)
+        assert exc.value.code == EXIT_RENAME_TARGET_EXISTS
         client.create_volume.assert_not_called()
 
     def test_source_in_use_without_force(self):
         client = _make_client(source_containers=["web"])
-        with pytest.raises(RenameError, match="in use by"):
+        with pytest.raises(RenameError, match="in use by") as exc:
             rename_volume("src", "dst", client=client)
+        assert exc.value.code == EXIT_RENAME_VOLUME_IN_USE
         client.create_volume.assert_not_called()
 
     def test_source_in_use_with_force_proceeds(self):
@@ -125,8 +136,9 @@ class TestValidation:
 class TestRollback:
     def test_copy_failure_removes_target_and_keeps_source(self):
         client = _make_client(copy_exit_code=1)
-        with pytest.raises(RenameError):
+        with pytest.raises(RenameError) as exc:
             rename_volume("src", "dst", client=client)
+        assert exc.value.code == EXIT_RENAME_COPY_FAILED
 
         removed = [c.args[0] for c in client.remove_volume.call_args_list]
         assert removed == ["dst"]  # never touches src

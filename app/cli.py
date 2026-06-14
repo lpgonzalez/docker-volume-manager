@@ -34,6 +34,9 @@ from cli_shared import (
     EXIT_CONFIG,
     EXIT_OK,
     EXIT_OPERATION,
+    EXIT_RENAME_SOURCE_MISSING,
+    EXIT_RENAME_TARGET_EXISTS,
+    EXIT_RENAME_VOLUME_IN_USE,
     EXIT_VALIDATION,
     _docker_fail,
     _normalise_recipients,
@@ -314,17 +317,39 @@ def verify(
     encryption_key: str | None = typer.Option(
         None, "--encryption-key", "-k", envvar="ENCRYPTION_KEY"
     ),
+    timestamp: str | None = typer.Option(
+        None,
+        "--timestamp",
+        "-t",
+        envvar="TIMESTAMP",
+        help="Specific backup timestamp (YYYYmmdd_HHMM[_NN]) to verify. "
+        "Default: the most recent.",
+    ),
+    repair: bool = typer.Option(
+        True,
+        "--repair/--no-repair",
+        envvar="REPAIR",
+        help="Auto-repair (default): if parity is damaged but recoverable, fix "
+        "the archive in place with par2 (modifies the backup). Use --no-repair "
+        "for a strictly read-only audit that never touches the file.",
+    ),
     log_level: str = typer.Option(
         "INFO", "--log-level", "-l", envvar="LOG_LEVEL", case_sensitive=False
     ),
     log_output: str = typer.Option("console", "--log-output", envvar="LOG_OUTPUT"),
 ) -> None:
-    """Verify a backup: existence, decryption, decompression and PAR2 parity."""
+    """Verify a backup: existence, decryption, decompression and PAR2 parity.
+
+    Auto-repairs a recoverable archive by default; pass --no-repair to audit
+    read-only without modifying the backup.
+    """
     _run_verify(
         name=name,
         output_path=output_path,
         encryption_key=encryption_key,
         output_volume=output_volume,
+        timestamp=timestamp,
+        repair=repair,
         log_level=log_level,
         log_output=_parse_log_output(log_output),
     )
@@ -410,10 +435,10 @@ def rename(
             raise typer.Exit(EXIT_VALIDATION)
         if not client.volume_exists(source):
             err_console.print(f"[bold red]Source volume {source!r} does not exist.[/]")
-            raise typer.Exit(EXIT_VALIDATION)
+            raise typer.Exit(EXIT_RENAME_SOURCE_MISSING)
         if client.volume_exists(target):
             err_console.print(f"[bold red]Target volume {target!r} already exists.[/]")
-            raise typer.Exit(EXIT_VALIDATION)
+            raise typer.Exit(EXIT_RENAME_TARGET_EXISTS)
         with console.status(f"[bold blue]Inspecting {source}...", spinner="dots"):
             source_info = client.inspect_volume(source, with_size=True)
     except DockerError as exc:
@@ -442,7 +467,7 @@ def rename(
             "[bold red]Source is in use.[/] Pass [cyan]--force[/] to proceed "
             "(risk of corruption if containers write during copy)."
         )
-        raise typer.Exit(EXIT_VALIDATION)
+        raise typer.Exit(EXIT_RENAME_VOLUME_IN_USE)
 
     if not yes:
         if not sys.stdin.isatty():
@@ -467,7 +492,7 @@ def rename(
         )
     except RenameError as exc:
         err_console.print(f"[bold red]Rename failed:[/] {exc}")
-        raise typer.Exit(EXIT_OPERATION) from None
+        raise typer.Exit(getattr(exc, "code", EXIT_OPERATION)) from None
     except DockerError as exc:
         _docker_fail(exc)
 

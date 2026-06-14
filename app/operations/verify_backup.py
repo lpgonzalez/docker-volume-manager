@@ -25,8 +25,12 @@ logger = logging.getLogger("dvm")
 
 class BackupVerifier:
     """
-    Audit a single backup archive — does not modify it (except via PAR2
-    repair when invoked through :py:meth:`verify_all`).
+    Audit a single backup archive.
+
+    Verification is **read-only by default**: :py:meth:`verify_all` inspects
+    the archive and classifies its PAR2 state without ever rewriting it. PAR2
+    repair (which mutates the archive in place) only runs when the verifier is
+    constructed with ``repair=True``.
 
     The full report dict returned by :py:meth:`verify_all` covers:
 
@@ -35,13 +39,18 @@ class BackupVerifier:
     - ``can_decrypt`` (bool): for encrypted archives, gpg accepted the
       provided passphrase or the active keyring contains the recipient key.
     - ``can_decompress`` (bool): the (optionally decrypted) tar archive
-      can be parsed by Python ``tarfile``. Re-checked after a successful
-      PAR2 repair.
+      can be parsed by Python ``tarfile`` **as it currently sits on disk**.
+      Re-checked after a successful PAR2 repair (``repair=True`` only).
     - ``parity_files_exist`` (bool): one or more ``.par2`` files were found
       next to the archive.
-    - ``parity_valid`` (bool): par2 verify succeeded without repair.
-    - ``parity_recovered`` (bool|None): when ``parity_valid`` is False,
-      whether par2 repair brought the archive back to a verifiable state.
+    - ``parity_valid`` (bool): par2 verify reports the archive intact (rc 0).
+    - ``parity_repairable`` (bool|None): ``None`` when parity is valid or
+      absent; ``True`` when the archive is damaged but par2 has enough
+      redundancy to repair it; ``False`` when the damage exceeds par2's
+      redundancy (unrecoverable).
+    - ``parity_recovered`` (bool|None): ``None`` in read-only mode (no repair
+      attempted). With ``repair=True`` and a repairable archive, whether
+      ``par2 repair`` brought it back to a verifiable state.
 
     Parameters
     ----------
@@ -50,11 +59,16 @@ class BackupVerifier:
     password:
         Optional passphrase. Required to decrypt symmetric ``.gpg`` archives
         when checking ``can_decrypt`` and ``can_decompress``.
+    repair:
+        When True, a damaged-but-repairable archive is repaired in place with
+        ``par2 repair``. Defaults to False — verification never modifies the
+        backup unless explicitly asked.
     """
 
-    def __init__(self, backup_path: str, password: str = ""):
+    def __init__(self, backup_path: str, password: str = "", repair: bool = False):
         self.backup_path = backup_path
         self.password = password
+        self.repair = repair
         try:
             self.gpg = gnupg.GPG()
             logger.debug("GPG instance initialized for verification")
@@ -290,13 +304,29 @@ class BackupVerifier:
         logger.debug("parity_files_exist -> %s", exist)
         return exist
 
-    def verify_parity_files(self) -> bool:
+    def _main_par2_file(self) -> str | None:
         files = getattr(self, "par2_files", []) or []
         if not files:
-            logger.debug("verify_parity_files: no par2 files found")
-            return False
-        # Prefer a main .par2 file (one that is not a volume block, i.e. does not contain ".vol")
-        main = next((f for f in files if ".vol" not in os.path.basename(f)), files[0])
+            return None
+        # Prefer the index .par2 file (one that is not a volume block, i.e. does
+        # not contain ".vol"); par2 auto-loads the sibling .vol*.par2 blocks.
+        return next((f for f in files if ".vol" not in os.path.basename(f)), files[0])
+
+    def classify_parity(self) -> str:
+        """Read-only PAR2 classification — never rewrites the archive.
+
+        Runs ``par2 verify`` and maps its result to one of:
+
+        - ``"valid"``: archive intact (par2 rc 0).
+        - ``"repairable"``: archive damaged, but par2 has enough redundancy to
+          repair it (par2 rc 1 / "Repair is possible").
+        - ``"unrepairable"``: archive damaged beyond par2's redundancy (par2
+          rc 2 / "Repair is not possible"), or par2 could not be run.
+        """
+        main = self._main_par2_file()
+        if not main:
+            logger.debug("classify_parity: no par2 files found")
+            return "unrepairable"
         logger.info("Verifying parity using: %s", main)
         try:
             result = subprocess.run(
@@ -304,16 +334,28 @@ class BackupVerifier:
                 capture_output=True,
                 check=False,
             )
-            logger.debug(
-                "par2 verify rc=%s stdout=%s stderr=%s",
-                result.returncode,
-                result.stdout.decode(errors="ignore"),
-                result.stderr.decode(errors="ignore"),
-            )
-            return result.returncode == 0
         except Exception:
             logger.exception("Exception while running par2 verify")
-            return False
+            return "unrepairable"
+
+        rc = result.returncode
+        out = (result.stdout + result.stderr).decode(errors="ignore")
+        logger.debug("par2 verify rc=%s output=%s", rc, out)
+        if rc == 0:
+            return "valid"
+        # Damaged. Prefer the textual verdict (stable across par2 builds), and
+        # fall back to the exit code: par2cmdline returns 1 (repair possible)
+        # or 2 (repair not possible).
+        low = out.lower()
+        if "repair is not possible" in low:
+            return "unrepairable"
+        if "repair is possible" in low or "repair is required" in low:
+            return "repairable"
+        return "repairable" if rc == 1 else "unrepairable"
+
+    def verify_parity_files(self) -> bool:
+        """Backward-compatible boolean: True only when parity is fully valid."""
+        return self.classify_parity() == "valid"
 
     def try_recover_with_parity(self) -> bool:
         files = getattr(self, "par2_files", []) or []
@@ -343,17 +385,19 @@ class BackupVerifier:
         """
         Run every applicable check and return a structured report.
 
-        When PAR2 parity is present and ``parity_valid`` is False, par2
-        repair is attempted in place. If the repair succeeds,
-        ``can_decompress`` is re-evaluated so the report reflects the
-        post-repair state instead of the pre-repair one.
+        Read-only by default: PAR2 parity is *classified* (valid / repairable /
+        unrepairable) without modifying the archive. Only when the verifier was
+        built with ``repair=True`` and the archive is repairable does ``par2
+        repair`` run in place; ``can_decompress`` is then re-evaluated so the
+        report reflects the post-repair state.
 
         Returns
         -------
         dict
             Keys: ``backup_exists``, ``is_encrypted``, ``can_decrypt``,
             ``can_decompress``, ``parity_files_exist``, ``parity_valid``,
-            ``parity_recovered``. See class docstring for semantics.
+            ``parity_repairable``, ``parity_recovered``. See class docstring
+            for semantics.
         """
         report = {}
         report["backup_exists"] = self.backup_exists()
@@ -364,6 +408,7 @@ class BackupVerifier:
             report["can_decompress"] = False
             report["parity_files_exist"] = False
             report["parity_valid"] = False
+            report["parity_repairable"] = None
             report["parity_recovered"] = None
             logger.warning("verify_all: backup does not exist: %s", self.backup_path)
             return report
@@ -373,19 +418,23 @@ class BackupVerifier:
         report["can_decompress"] = self.can_decompress()
         # Always include parity-related keys in the report.
         report["parity_files_exist"] = self.parity_files_exist()
+        report["parity_repairable"] = None
+        report["parity_recovered"] = None
         if report["parity_files_exist"]:
-            report["parity_valid"] = self.verify_parity_files()
+            state = self.classify_parity()  # read-only
+            report["parity_valid"] = state == "valid"
             if not report["parity_valid"]:
-                report["parity_recovered"] = self.try_recover_with_parity()
-                # PAR2 repair rewrites the archive in place. Re-check
-                # decompression so the final report reflects post-repair state.
-                if report["parity_recovered"]:
-                    report["can_decompress"] = self.can_decompress()
-            else:
-                report["parity_recovered"] = None
+                report["parity_repairable"] = state == "repairable"
+                # Repair is strictly opt-in: never mutate the archive unless the
+                # caller asked for it AND par2 has the redundancy to succeed.
+                if self.repair and report["parity_repairable"]:
+                    report["parity_recovered"] = self.try_recover_with_parity()
+                    if report["parity_recovered"]:
+                        # par2 rewrote the archive — re-check decompression so
+                        # the report reflects the post-repair state.
+                        report["can_decompress"] = self.can_decompress()
         else:
             report["parity_valid"] = False
-            report["parity_recovered"] = None
 
         logger.info(
             "verify_all report: %s",
@@ -398,6 +447,7 @@ class BackupVerifier:
                     "can_decompress",
                     "parity_files_exist",
                     "parity_valid",
+                    "parity_repairable",
                 ]
             },
         )
