@@ -50,6 +50,17 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=latest
+          # Curated OCI labels (keep in sync with the Dockerfile LABEL block).
+          # These override the action's auto-generated values, which otherwise
+          # replace the description with the GitHub "About" blurb and point url
+          # at the repo instead of Docker Hub. authors/vendor/documentation are
+          # also surfaced here so the published label set is complete.
+          labels: |
+            org.opencontainers.image.authors=Lisardo Prieto <lisardo.prieto.gonzalez@gmail.com>
+            org.opencontainers.image.vendor=Lisardo Prieto
+            org.opencontainers.image.url=https://hub.docker.com/r/lpgonzalez/docker-volume-manager
+            org.opencontainers.image.documentation=https://github.com/lpgonzalez/docker-volume-manager#readme
+            org.opencontainers.image.description=Containerized one-shot tool to backup, restore, verify, copy and rename Docker volumes (and arbitrary directories). ZSTD/GZ compression, GPG encryption, PAR2 parity, detached signing, full metadata fidelity (uid/gid/mode/xattrs/ACLs), live progress and a stall watchdog. Driven by a typer + rich CLI with a scriptable and an interactive (wizard) mode.
 
       - name: Build and push
         uses: docker/build-push-action@v7
