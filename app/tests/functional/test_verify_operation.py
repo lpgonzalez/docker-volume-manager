@@ -81,15 +81,15 @@ def _verify(output_dir, name, *, password="", repair=None, timestamp=None):
     0 = healthy/auto-repaired; otherwise the OperationError's specific code.
     repair=None omits REPAIR so the Config default (auto-repair) is exercised.
     """
-    kwargs = dict(
-        OPERATION="VERIFY",
-        BACKUP_FILE_NAME=name,
-        OUTPUT_PATH=str(output_dir),
-        ENCRYPTION_KEY=password,
-        TIMESTAMP=timestamp,
-        LOG_OUTPUT=["console"],
-        LOGS_PATH=None,
-    )
+    kwargs = {
+        "OPERATION": "VERIFY",
+        "BACKUP_FILE_NAME": name,
+        "OUTPUT_PATH": str(output_dir),
+        "ENCRYPTION_KEY": password,
+        "TIMESTAMP": timestamp,
+        "LOG_OUTPUT": ["console"],
+        "LOGS_PATH": None,
+    }
     if repair is not None:
         kwargs["REPAIR"] = repair
     try:

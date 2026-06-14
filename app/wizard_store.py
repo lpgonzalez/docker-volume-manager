@@ -27,7 +27,11 @@ from operations import codecs
 
 # Timestamp directory names produced by BackupManager (e.g. 20260613_2210, _01).
 _TS_RE = re.compile(r"^\d{8}_\d{4}(?:_\d{2})?$")
-_ARCHIVE_EXTS = tuple(codecs.ARCHIVE_EXTS)
+# Archive suffixes plus their encrypted (.gpg) variants, as one tuple so a single
+# str.endswith() call can match any of them.
+_ARCHIVE_SUFFIXES = tuple(codecs.ARCHIVE_EXTS) + tuple(
+    ext + ".gpg" for ext in codecs.ARCHIVE_EXTS
+)
 
 
 def is_timestamp(name: str) -> bool:
@@ -35,8 +39,7 @@ def is_timestamp(name: str) -> bool:
 
 
 def looks_like_archive(fname: str) -> bool:
-    low = fname.lower()
-    return any(low.endswith(ext) or low.endswith(ext + ".gpg") for ext in _ARCHIVE_EXTS)
+    return fname.lower().endswith(_ARCHIVE_SUFFIXES)
 
 
 class BackupStore:
