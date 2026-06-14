@@ -9,8 +9,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from docker_client import DockerError
-from wizard_store import LocalDirStore, VolumeStore
+from wizard_store import (
+    HostPathStore,
+    LocalDirStore,
+    RemoteStore,
+    VolumeStore,
+    list_host_subdirs,
+)
 
 
 def _make_layout(root):
@@ -92,3 +100,45 @@ def test_volume_docker_error_degrades_to_empty():
     store = VolumeStore("vol", client=client)
     assert store.list_names() == []
     assert store.is_writable() is True
+
+
+# --- RemoteStore: one class, volume-name OR host-path mount key --------------
+
+
+@pytest.mark.parametrize(
+    "make_store,expected_key",
+    [
+        (lambda c: RemoteStore("vol", c), "vol"),
+        (lambda c: VolumeStore("vol", c), "vol"),
+        (lambda c: RemoteStore("/host/backups", c), "/host/backups"),
+        (lambda c: HostPathStore("/host/backups", c), "/host/backups"),
+    ],
+)
+def test_remote_store_mount_key_flows_to_throwaway(make_store, expected_key):
+    client = MagicMock()
+    client.run_throwaway.return_value = "/target/yadee\n"
+    store = make_store(client)
+
+    assert store.list_names() == ["yadee"]
+    # The mount-dict key is the volume name OR the host path verbatim; docker-py
+    # disambiguates (absolute path → bind mount, bare name → named volume).
+    _args, kwargs = client.run_throwaway.call_args
+    assert kwargs["volumes"] == {expected_key: {"bind": "/target", "mode": "ro"}}
+
+
+def test_store_labels_distinguish_kind():
+    client = MagicMock()
+    assert VolumeStore("vol", client).label == "volume 'vol'"
+    assert HostPathStore("/host/x", client).label == "host /host/x"
+
+
+def test_list_host_subdirs_parses_basenames():
+    client = MagicMock()
+    client.run_throwaway.return_value = "/target/a\n/target/b\n"
+    assert list_host_subdirs(client, "/host/p") == ["a", "b"]
+
+
+def test_list_host_subdirs_degrades_on_error():
+    client = MagicMock()
+    client.run_throwaway.side_effect = DockerError("no socket")
+    assert list_host_subdirs(client, "/host/p") == []

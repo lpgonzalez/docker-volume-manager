@@ -7,13 +7,15 @@ Backup-store abstraction for the interactive wizard.
 The wizard needs to list and validate backups *before* dispatching, and it must
 behave the same whether the backup lives in:
 
-- a **local bind-mount directory**, directly visible to this container, or
-- a **Docker volume**, whose contents are only reachable by spawning a throwaway
-  container that mounts it (the volume is not mounted into the wizard itself).
+- a **local bind-mount directory**, directly visible to this container
+  (``LocalDirStore``), or
+- a **Docker volume** or an **absolute host path**, neither mounted into the
+  wizard itself — reached by spawning a throwaway container that mounts it at
+  ``/target`` (``RemoteStore``; ``VolumeStore``/``HostPathStore`` are thin,
+  back-compat labelled subclasses).
 
-``LocalDirStore`` and ``VolumeStore`` implement one interface so the wizard flow
-stays identical for both. Layout assumed everywhere:
-``<root>/<name>/<YYYYmmdd_HHMM[_NN]>/<name>.<ext>[.gpg]``.
+All implement one interface so the wizard flow stays identical. Layout assumed
+everywhere: ``<root>/<name>/<YYYYmmdd_HHMM[_NN]>/<name>.<ext>[.gpg]``.
 """
 
 from __future__ import annotations
@@ -105,18 +107,26 @@ class LocalDirStore(BackupStore):
         return os.path.isdir(self.path) and os.access(self.path, os.W_OK)
 
 
-class VolumeStore(BackupStore):
-    """A backup store backed by a Docker volume, inspected via throwaway containers.
+class RemoteStore(BackupStore):
+    """A backup store reachable only via a throwaway helper container.
 
-    Each query spawns a short-lived container that mounts the volume read-only at
-    ``/target`` and runs ``find``. ``|| true`` keeps a missing sub-path from
-    failing the container; any Docker error degrades to an empty result.
+    Each query spawns a short-lived container that bind-mounts the location at
+    ``/target`` and runs ``find``. ``mount_key`` is either a **Docker volume
+    name** or an **absolute host path** — docker-py resolves an absolute path as
+    a bind mount and a bare name as a named volume, so the same code serves both.
+    ``|| true`` keeps a missing sub-path from failing the container; any Docker
+    error degrades to an empty result.
     """
 
-    def __init__(self, volume: str, client: DockerClient | None = None):
-        self.volume = volume
+    def __init__(
+        self,
+        mount_key: str,
+        client: DockerClient | None = None,
+        label: str | None = None,
+    ):
+        self.mount_key = mount_key
         self.client = client or DockerClient()
-        self.label = f"volume {volume!r}"
+        self.label = label if label is not None else repr(mount_key)
 
     def _find(self, subpath: str, kind: str, *, mode: str = "ro") -> list[str]:
         target = "/target" + (f"/{subpath}" if subpath else "")
@@ -127,7 +137,7 @@ class VolumeStore(BackupStore):
         try:
             out = self.client.run_throwaway(
                 ["sh", "-c", script],
-                volumes={self.volume: {"bind": "/target", "mode": mode}},
+                volumes={self.mount_key: {"bind": "/target", "mode": mode}},
             )
         except DockerError:
             return []
@@ -147,5 +157,29 @@ class VolumeStore(BackupStore):
         return any(looks_like_archive(f) for f in files)
 
     def is_writable(self) -> bool:
-        # A Docker volume is writable by construction; the pivot mounts it rw.
+        # A mounted volume/host path is writable by construction; the pivot
+        # mounts it rw for the actual operation.
         return True
+
+
+class VolumeStore(RemoteStore):
+    """``RemoteStore`` for a Docker volume (back-compat name)."""
+
+    def __init__(self, volume: str, client: DockerClient | None = None):
+        super().__init__(volume, client, label=f"volume {volume!r}")
+
+
+class HostPathStore(RemoteStore):
+    """``RemoteStore`` for an absolute host directory path."""
+
+    def __init__(self, path: str, client: DockerClient | None = None):
+        super().__init__(path, client, label=f"host {path}")
+
+
+def list_host_subdirs(client: DockerClient, host_path: str) -> list[str]:
+    """Immediate sub-directory names of a host path, via a throwaway helper.
+
+    Used by the wizard's host browser to descend the host filesystem without
+    bind-mounting it into the main container. Empty on any Docker error.
+    """
+    return RemoteStore(host_path, client).list_names()
