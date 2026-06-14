@@ -2,7 +2,45 @@
 
 All notable changes to Docker Volume Manager.
 
-The project follows a [pragmatic, single-developer cadence](https://keepachangelog.com/en/1.1.0/) — no formal release tags yet; dates indicate when the change landed in main.
+The project follows a [pragmatic, single-developer cadence](https://keepachangelog.com/en/1.1.0/). Releases are tagged as `vMAJOR.MINOR.PATCH`; pushing a tag publishes the multi-arch image to Docker Hub.
+
+## [3.1.0] — 2026-06-14 — Honest verify, typed exit codes, redesigned wizard
+
+### Added
+- **`verify --no-repair`**: strictly read-only audit that never modifies the backup. Auto-repair remains the default.
+- **`verify -t/--timestamp`**: verify a specific backup timestamp (default: the most recent).
+- **`verify.outcome` code** logged on every run: `INTACT` / `REPAIRED` / `CORRUPT_REPAIRABLE` / `CORRUPT_UNREPAIRABLE` / `DAMAGED` / `DECRYPT_FAILED` / `BACKUP_MISSING` …
+- **Per-operation exit codes** (tens digit = operation): BACKUP `10-13`, RESTORE `20-25`, VERIFY `30-35`, COPY `40-42`, RENAME `50-53`, VOLUMES `60-62`. Operations raise `OperationError` (or carry a `.code` on `RestoreError`/`RenameError`); the runner maps it to the process exit code.
+- **TAB completion in the interactive wizard** (stdlib `readline`): operations, choices, filesystem paths, backup names and volume names. No-op when `readline` is unavailable.
+- **Location-first wizard flow**: choose a directory or Docker volume, then pick from a numbered, paginated listing of existing backup names and dated timestamps (newest first). New `BackupStore` abstraction (`LocalDirStore` / `VolumeStore`); volume contents are enumerated via a throwaway helper container. New modules `app/completion.py`, `app/wizard_store.py`, `app/wizard_ui.py`.
+
+### Changed
+- **`verify` tells the truth about PAR2 parity.** It classifies the archive instead of silently repairing and always reporting healthy; the health verdict (and exit code) reflect the real outcome. Auto-repair stays the default but logs loudly that it modified the file.
+- Wizard prompts reordered to location → list → select, validating an archive is present before continuing; the backup flow checks the destination is writable.
+- Generic operation failures still exit `4`; scripts checking `$? != 0` are unaffected, but callers can now branch on the specific code.
+
+## [3.0.1] — 2026-06-13
+
+### Fixed
+- **`verify` archive location**: verify now locates the archive in the real `<name>/<timestamp>/` layout (it previously treated `<output>/<name>` — a directory — as the archive and always passed). Bad backups now fail instead of reporting healthy.
+- **Wizard restore prompts** clarified: backup *source* (where the backup lives) vs restore *destination* are now distinct and explained.
+- Metadata-fidelity tests made robust (file-only mtime checks, ±1s tolerance).
+
+## [3.0.0] — 2026-06-08 — Quality, observability and multi-arch publish
+
+### Added
+- **Multi-arch Docker Hub publish** (amd64 + arm64) on tag push; native amd64/arm64 CI matrix; OCI image labels.
+- **Live byte-level progress** plus a subprocess **stall watchdog** (`DVM_STALL_TIMEOUT`) that terminates a hung backup/restore.
+- **Extended-attribute / POSIX-ACL preservation** (SCHILY.xattr PAX records) and directory mtime fidelity, asserted by tests.
+- Ruff (lint + format) and Pyright tooling.
+
+### Changed
+- CLI split from the former monolith into focused modules (`cli_shared` / `pivot` / `runners` / `volumes_cli` / `wizard` / `cli`) with a clean, cycle-free dependency direction.
+- Compression codecs centralized into a single registry (`operations/codecs.py`).
+- Docker errors organized into a typed exception taxonomy; helper-container pivot dispatch centralized.
+
+### Fixed
+- Correctness and security bugs surfaced during the refactor (see commit history).
 
 ## [2.0.0] — 2026-04-25 — Major overhaul (breaking)
 
